@@ -1,6 +1,7 @@
 """Offline concurrency tests; no credentials, live stream or cloud calls."""
 import asyncio
 import sys
+import threading
 import time
 from types import ModuleType, SimpleNamespace
 
@@ -155,6 +156,44 @@ def test_local_voice_inference_does_not_block_asyncio_loop(monkeypatch):
         assert await asyncio.wait_for(synthesis, 1) == b'hola'
 
     asyncio.run(scenario())
+
+
+def test_stop_waits_for_running_local_voice_before_finishing_qthread(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingVoice:
+        def __init__(self, *_args):
+            pass
+
+        def synthesize(self, text, *_args):
+            entered.set()
+            assert release.wait(2)
+            return text.encode()
+
+    monkeypatch.setattr('narrador.worker.LocalVoice', BlockingVoice)
+    async def no_greeting(_self, _services):
+        return None
+    monkeypatch.setattr(SessionWorker, '_initial_greeting', no_greeting)
+    worker = SessionWorker(Settings(tts_engine='local'), {}, 8, mode='demo')
+    worker.start()
+    deadline = time.monotonic() + 2
+    while worker._queue is None and time.monotonic() < deadline:
+        _APP.processEvents()
+        time.sleep(0.005)
+    worker.inject('comment', 'viewer-1', 'Ana', 'hola')
+    assert entered.wait(2)
+
+    worker.stop()
+    assert worker.isRunning()
+    release.set()
+
+    loop = QEventLoop()
+    worker.finished.connect(loop.quit)
+    QTimer.singleShot(2500, loop.quit)
+    if worker.isRunning():
+        loop.exec()
+    assert not worker.isRunning()
 
 
 def test_demo_voice_error_is_logged_without_ending_consumer(monkeypatch):
