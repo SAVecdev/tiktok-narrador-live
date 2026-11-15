@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import tempfile
+import faulthandler
 import traceback
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
@@ -14,6 +15,7 @@ from platformdirs import user_log_path
 LOGGER = logging.getLogger('narrador')
 MAX_LOG_BYTES = 2 * 1024 * 1024
 LOG_BACKUPS = 3
+_CRASH_STREAM = None
 
 
 def log_directory() -> Path:
@@ -34,6 +36,7 @@ def record_exception(context: str, error: BaseException) -> None:
 
 
 def configure_logging() -> Path:
+    global _CRASH_STREAM
     directory = log_directory()
     try:
         directory.mkdir(parents=True, exist_ok=True)
@@ -55,6 +58,15 @@ def configure_logging() -> Path:
         LOGGER.addHandler(handler)
         LOGGER.setLevel(logging.INFO)
         LOGGER.propagate = False
+
+    if _CRASH_STREAM is None:
+        try:
+            _CRASH_STREAM = (directory / 'native-crash.log').open('a', encoding='utf-8', buffering=1)
+            faulthandler.enable(file=_CRASH_STREAM, all_threads=True)
+            LOGGER.info('native crash diagnostics enabled')
+        except OSError as exc:
+            LOGGER.error('native crash diagnostics could not be enabled; exception=%s', type(exc).__name__)
+            _CRASH_STREAM = None
 
     def unhandled(error_type, error, tb):
         if error is not None:

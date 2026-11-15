@@ -131,28 +131,42 @@ class QwenResourceError(RuntimeError):
     """Actionable error when the machine cannot safely load the 1.7B model."""
 
 
+_QWEN_RUNTIME = None
+
+
+def preload_qwen_runtime():
+    """Load native Qwen/LLVM dependencies on the GUI thread before starting a worker."""
+    global _QWEN_RUNTIME
+    if _QWEN_RUNTIME is not None:
+        return _QWEN_RUNTIME
+    LOGGER.info('qwen.runtime.import.begin')
+    try:
+        import torch
+        import psutil
+        from qwen_tts import Qwen3TTSModel
+        from huggingface_hub import snapshot_download
+        from tqdm.auto import tqdm
+    except ImportError as exc:
+        if getattr(sys, 'frozen', False):
+            message = ('Qwen3-TTS no está incluido en este paquete portable. Usa la versión del código fuente '
+                       'e instala requirements-qwen.txt; Kokoro local sí está disponible en el paquete.')
+        else:
+            message = ('Para usar Qwen3-TTS instala las dependencias locales con: '
+                       'python -m pip install -r requirements-qwen.txt')
+        raise QwenDependencyError(message) from exc
+    _QWEN_RUNTIME = (torch, psutil, Qwen3TTSModel, snapshot_download, tqdm)
+    LOGGER.info('qwen.runtime.import.ready')
+    return _QWEN_RUNTIME
+
+
 class QwenVoice:
     """Qwen3-TTS 1.7B voice design; weights are downloaded by Hugging Face on first use."""
 
     def __init__(self, progress=None, cancelled=None):
-        try:
-            import torch
-            import psutil
-            from qwen_tts import Qwen3TTSModel
-            from huggingface_hub import snapshot_download
-            from tqdm.auto import tqdm
-        except ImportError as exc:
-            if getattr(sys, 'frozen', False):
-                message = ('Qwen3-TTS no está incluido en este paquete portable. Usa la versión del código fuente '
-                           'e instala requirements-qwen.txt; Kokoro local sí está disponible en el paquete.')
-            else:
-                message = ('Para usar Qwen3-TTS instala las dependencias locales con: '
-                           'python -m pip install -r requirements-qwen.txt')
-            raise QwenDependencyError(
-                message
-            ) from exc
+        torch, psutil, Qwen3TTSModel, snapshot_download, tqdm = preload_qwen_runtime()
 
         model_path = Path(user_cache_path('TikTokNarradorLive')) / 'qwen3-tts-1.7b-voicedesign'
+        LOGGER.info('qwen.resources.check.begin')
         model_path.mkdir(parents=True, exist_ok=True)
         memory_gib = psutil.virtual_memory().available / (1024 ** 3)
         if torch.cuda.is_available():
@@ -196,6 +210,7 @@ class QwenVoice:
 
         if cancelled and cancelled.is_set():
             raise InterruptedError('Descarga de Qwen3-TTS cancelada.')
+        LOGGER.info('qwen.resources.check.ready device=%s memory_available_gib=%.1f', device, memory_gib)
         LOGGER.info('qwen.model.download.begin revision=%s', QWEN_MODEL_REVISION)
         try:
             snapshot_download(
