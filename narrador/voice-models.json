@@ -1,0 +1,14 @@
+{
+  "kokoro-v1.0.int8.onnx": {
+    "url": "https://huggingface.co/srsuzume/tts/resolve/391dfc06b9e9b3dc480457c79f74b2a9cb8058c4/kokoro-v1.0.int8.onnx",
+    "sha256": "6e742170d309016e5891a994e1ce1559c702a2ccd0075e67ef7157974f6406cb",
+    "size": 92361271,
+    "license": "Apache-2.0"
+  },
+  "voices-v1.0.bin": {
+    "url": "https://huggingface.co/PatnaikAshish/kokoclone/resolve/64dda9eada5b036deede1faf29715d3145b5b703/voice/voices-v1.0.bin",
+    "sha256": "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
+    "size": 28214398,
+    "license": "Apache-2.0"
+  }
+}

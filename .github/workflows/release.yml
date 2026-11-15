@@ -1,0 +1,83 @@
+name: Desktop downloads
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            label: linux-x64
+          - runner: windows-2022
+            label: windows-x64
+          - runner: macos-15
+            label: macos-arm64
+          - runner: macos-15-intel
+            label: macos-x64
+    runs-on: ${{ matrix.runner }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Linux runtime libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0 libpulse0 libxcb-cursor0
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+      - run: python -m PyInstaller --noconfirm Narrador.spec
+      - name: Smoke packaged app
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            dist/TikTokNarradorLive/TikTokNarradorLive.exe --smoke packaged.png
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
+            dist/TikTokNarradorLive.app/Contents/MacOS/TikTokNarradorLive --smoke packaged.png
+          else
+            dist/TikTokNarradorLive/TikTokNarradorLive --smoke packaged.png
+          fi
+      - name: Archive download
+        shell: python
+        run: |
+          import shutil, os
+          from pathlib import Path
+          import hashlib
+          name = 'TikTokNarradorLive-${{ matrix.label }}'
+          folder = 'TikTokNarradorLive.app' if os.environ['RUNNER_OS'] == 'macOS' else 'TikTokNarradorLive'
+          shutil.make_archive(name, 'zip', 'dist', folder)
+          digest = hashlib.sha256(Path(name + '.zip').read_bytes()).hexdigest()
+          Path(name + '.sha256').write_text(digest + '  ' + name + '.zip\n')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TikTokNarradorLive-${{ matrix.label }}
+          path: |
+            TikTokNarradorLive-*.zip
+            TikTokNarradorLive-*.sha256
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: downloads
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cat downloads/*.sha256 > downloads/SHA256SUMS.txt
+          gh release create "$RELEASE_TAG" downloads/*.zip downloads/SHA256SUMS.txt --title "TikTok Narrador Live $RELEASE_TAG" --generate-notes

@@ -1,0 +1,10 @@
+PySide6==6.12.0
+httpx==0.28.1
+keyring==25.7.0
+platformdirs==4.14.5
+TikTokLive==7.0.1
+kokoro-onnx==0.4.7
+onnxruntime==1.23.2; sys_platform == "darwin" and platform_machine == "x86_64"
+onnxruntime==1.32.0; sys_platform != "darwin" or platform_machine == "arm64"
+faster-whisper==1.2.1
+sounddevice==0.5.3
