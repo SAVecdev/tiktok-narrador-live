@@ -18,6 +18,26 @@ python -m pip install -r requirements-qwen.txt
 python run.py
 ```
 
+### GPU AMD en Linux
+
+Para usar Qwen3-TTS con una Radeon compatible con ROCm, crea un entorno independiente con Python 3.12. El entorno normal de CPU y los entornos para Windows/macOS no se modifican:
+
+```bash
+python3.12 -m venv .venv-amd
+.venv-amd/bin/python -m pip install -r requirements.txt -r requirements-amd-rocm.txt
+bash run_amd.sh
+```
+
+PyTorch usa la API `torch.cuda` también con ROCm. El controlador AMD del sistema debe exponer `/dev/kfd` y `/dev/dri/renderD*`, y la cuenta debe tener acceso a ellos. Las ruedas ROCm de AMD incluyen soporte para `gfx1200`; consulta la [instalación oficial de PyTorch ROCm](https://rocm.docs.amd.com/projects/ai-ecosystem/en/latest/frameworks/pytorch/install.html) para otros modelos de GPU y versiones de Linux.
+
+Para respuestas locales instala Ollama y descarga el modelo sugerido para una GPU de 16 GB (Qwen3.5 4B):
+
+```bash
+ollama pull qwen3.5:4b
+```
+
+Qwen3.5 9B también está disponible si se prioriza calidad y hay VRAM libre, pero 4B deja más espacio para mantener la síntesis Qwen-TTS cargada a la vez. El modo local de la app desactiva el razonamiento extendido y limita las respuestas para reducir la latencia en directo. En Linux con GPU AMD, PyTorch y Ollama deben tener sus runtimes ROCm instalados y ver la GPU; instalar solo los pesos no activa la aceleración.
+
 Pulsa **Demo** y simula un comentario o una llegada para probar la interfaz. Qwen3-TTS 1.7B VoiceDesign es la voz local predeterminada. Al generar el primer audio, Qwen descarga sus pesos (el modelo ocupa unos 4,52 GB) y los mantiene en la caché local de Hugging Face; el código fija una revisión del modelo. La demo no requiere clave de API. En Linux o Windows sin GPU compatible, la primera síntesis puede tardar bastante. Kokoro sigue disponible como alternativa ligera: descarga el modelo int8 (unos 88 MiB) y las voces (unos 27 MiB), verifica sus SHA-256 y funciona sin GPU. Activa el micrófono desde **Voz** para transcribir localmente y repetir lo que dices con la voz sintética seleccionada; Whisper Tiny descarga unos 75 MiB la primera vez.
 
 ## Preparar servicios externos
