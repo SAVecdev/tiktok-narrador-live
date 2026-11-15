@@ -276,11 +276,14 @@ class SessionWorker(QThread):
                 if event.kind != "join" and time.monotonic() - event.created > self.MAX_AGE:
                     continue
                 if event.kind == "join":
-                    self._emit(self.log, f"Evento de entrada al LIVE · @{event.name}; se preparará una bienvenida.")
+                    source = "entrada simulada en demo" if self.mode == "demo" else "entrada al LIVE"
+                    self._emit(self.log, f"Evento de {source} · @{event.name}; se preparará una bienvenida.")
                 elif self.settings.mode == "answer":
-                    self._emit(self.log, f"Comentario recibido de TikTok · @{event.name}: {event.text}")
+                    source = "simulado en demo" if self.mode == "demo" else "recibido de TikTok"
+                    self._emit(self.log, f"Comentario {source} · @{event.name}: {event.text}")
                 else:
-                    self._emit(self.log, f"Comentario recibido de TikTok (lectura literal) · @{event.name}: {event.text}")
+                    source = "simulado en demo" if self.mode == "demo" else "recibido de TikTok"
+                    self._emit(self.log, f"Comentario {source} (lectura literal) · @{event.name}: {event.text}")
                 text = (await self._personalized_greeting(event, services)
                         if event.kind == "join" else event.text)
                 if self.mode == "demo":
