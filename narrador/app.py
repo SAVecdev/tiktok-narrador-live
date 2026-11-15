@@ -637,7 +637,7 @@ class MainWindow(QMainWindow):
                 self.model.addItem(item if isinstance(item, str) else item.get('name', ''))
             self.model.setCurrentText(current)
             if not items:
-                self._log('No se encontraron modelos. Comprueba Ollama y descarga uno, por ejemplo: ollama pull llama3.2')
+                self._log('No se encontraron modelos. Comprueba Ollama y descarga uno, por ejemplo: ollama pull qwen3.5:4b')
 
     def _refresh_models(self):
         self._start('local_models' if self.reply_provider.currentData() == 'ollama' else 'models')
