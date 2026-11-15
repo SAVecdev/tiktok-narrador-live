@@ -160,9 +160,23 @@ def preload_qwen_runtime(refresh_resources=True):
             import torch
             import psutil
             import numpy
-            from qwen_tts import Qwen3TTSModel
-            from huggingface_hub import snapshot_download
-            from tqdm.auto import tqdm
+            triton_was_loaded = 'triton' in sys.modules
+            previous_triton = sys.modules.get('triton')
+            if not triton_was_loaded:
+                # This app uses eager Qwen inference. Triton's bundled LLVM collides with
+                # the system LLVM on some Linux installs and is not needed without torch.compile.
+                sys.modules['triton'] = None
+            try:
+                from qwen_tts import Qwen3TTSModel
+                from huggingface_hub import snapshot_download
+                from tqdm.auto import tqdm
+            finally:
+                if not triton_was_loaded:
+                    sys.modules.pop('triton', None)
+                else:
+                    sys.modules['triton'] = previous_triton
+            if not triton_was_loaded:
+                LOGGER.info('qwen.runtime.triton=disabled for eager inference')
         except ImportError as exc:
             if getattr(sys, 'frozen', False):
                 message = ('Qwen3-TTS no está incluido en este paquete portable. Usa la versión del código fuente '

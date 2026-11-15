@@ -1,4 +1,7 @@
+import importlib.util
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -56,3 +59,19 @@ def test_qwen_preflight_rejects_low_memory_before_starting_worker(monkeypatch):
 
     with pytest.raises(QwenResourceError):
         local_voice.preload_qwen_runtime()
+
+
+def test_qwen_preflight_bypasses_the_crashing_triton_loader():
+    if sys.platform != 'linux' or importlib.util.find_spec('qwen_tts') is None:
+        pytest.skip('Qwen3-TTS runtime is optional and this test targets Linux native loading.')
+    script = """
+from narrador.local_voice import preload_qwen_runtime
+preload_qwen_runtime()
+import torch._dynamo.utils
+assert not torch._dynamo.utils.has_triton_package()
+print('QWEN_TRITON_BYPASS_OK')
+"""
+    result = subprocess.run([sys.executable, '-X', 'faulthandler', '-c', script],
+                            capture_output=True, text=True, timeout=45)
+    assert result.returncode == 0, result.stderr
+    assert 'QWEN_TRITON_BYPASS_OK' in result.stdout
