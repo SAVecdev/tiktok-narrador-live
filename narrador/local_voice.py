@@ -13,6 +13,8 @@ from pathlib import Path
 import httpx
 from platformdirs import user_cache_path, user_data_path
 
+from .diagnostics import LOGGER, record_exception
+
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = Path(__file__).resolve().parent / 'voice-models.json'
 MODEL_FILES = ('kokoro-v1.0.int8.onnx', 'voices-v1.0.bin')
@@ -125,12 +127,17 @@ class QwenDependencyError(RuntimeError):
     """Actionable error shown when the optional Qwen runtime is missing."""
 
 
+class QwenResourceError(RuntimeError):
+    """Actionable error when the machine cannot safely load the 1.7B model."""
+
+
 class QwenVoice:
     """Qwen3-TTS 1.7B voice design; weights are downloaded by Hugging Face on first use."""
 
     def __init__(self, progress=None, cancelled=None):
         try:
             import torch
+            import psutil
             from qwen_tts import Qwen3TTSModel
             from huggingface_hub import snapshot_download
             from tqdm.auto import tqdm
@@ -147,6 +154,36 @@ class QwenVoice:
 
         model_path = Path(user_cache_path('TikTokNarradorLive')) / 'qwen3-tts-1.7b-voicedesign'
         model_path.mkdir(parents=True, exist_ok=True)
+        memory_gib = psutil.virtual_memory().available / (1024 ** 3)
+        if torch.cuda.is_available():
+            free_vram, _total_vram = torch.cuda.mem_get_info(0)
+            if free_vram >= 7 * (1024 ** 3):
+                device = 'cuda:0'
+                dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            elif memory_gib >= 12:
+                device = 'cpu'
+                dtype = torch.float32
+            else:
+                raise QwenResourceError(
+                    'Qwen 1.7B necesita unos 7 GB de VRAM libre o 12 GB de RAM disponible. '
+                    'Libera memoria o selecciona Kokoro en Voz.'
+                )
+        elif getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available():
+            if memory_gib < 12:
+                raise QwenResourceError(
+                    'Qwen 1.7B necesita unos 12 GB de memoria disponible. '
+                    'Libera memoria o selecciona Kokoro en Voz.'
+                )
+            device = 'mps'
+            dtype = torch.float16
+        else:
+            if memory_gib < 12:
+                raise QwenResourceError(
+                    'Qwen 1.7B necesita unos 12 GB de RAM disponible en este equipo. '
+                    'Libera memoria o selecciona Kokoro en Voz.'
+                )
+            device = 'cpu'
+            dtype = torch.float32
 
         class DownloadProgress(tqdm):
             def update(self, n=1):
@@ -159,32 +196,37 @@ class QwenVoice:
 
         if cancelled and cancelled.is_set():
             raise InterruptedError('Descarga de Qwen3-TTS cancelada.')
-        snapshot_download(
-            repo_id=QWEN_MODEL_ID,
-            revision=QWEN_MODEL_REVISION,
-            local_dir=model_path,
-            max_workers=2,
-            tqdm_class=DownloadProgress,
-        )
+        LOGGER.info('qwen.model.download.begin revision=%s', QWEN_MODEL_REVISION)
+        try:
+            snapshot_download(
+                repo_id=QWEN_MODEL_ID,
+                revision=QWEN_MODEL_REVISION,
+                local_dir=model_path,
+                etag_timeout=5,
+                max_workers=2,
+                tqdm_class=DownloadProgress,
+            )
+        except InterruptedError:
+            LOGGER.info('qwen.model.download.cancelled')
+            raise
+        except Exception as exc:
+            record_exception('qwen model download failed', exc)
+            raise
         if cancelled and cancelled.is_set():
             raise InterruptedError('Descarga de Qwen3-TTS cancelada.')
 
-        if torch.cuda.is_available():
-            device = 'cuda:0'
-            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        elif getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available():
-            device = 'mps'
-            dtype = torch.float16
-        else:
-            device = 'cpu'
-            dtype = torch.float32
-
-        self.engine = Qwen3TTSModel.from_pretrained(
-            str(model_path),
-            local_files_only=True,
-            device_map=device,
-            dtype=dtype,
-        )
+        LOGGER.info('qwen.model.load.begin device=%s memory_available_gib=%.1f', device, memory_gib)
+        try:
+            self.engine = Qwen3TTSModel.from_pretrained(
+                str(model_path),
+                local_files_only=True,
+                device_map=device,
+                dtype=dtype,
+            )
+        except Exception as exc:
+            record_exception('qwen model load failed', exc)
+            raise
+        LOGGER.info('qwen.model.load.ready device=%s', device)
 
     @staticmethod
     def instruction(accent: str, style: str, pitch: float = 0.0, gender: str = 'FEMALE') -> str:

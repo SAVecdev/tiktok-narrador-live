@@ -11,7 +11,8 @@ import httpx
 from PySide6.QtCore import QThread, Signal
 
 from .core import Event, Policy, clean_text
-from .local_voice import LocalVoice, QwenDependencyError, QwenVoice
+from .diagnostics import LOGGER, record_exception
+from .local_voice import LocalVoice, QwenDependencyError, QwenResourceError, QwenVoice
 from .memory import MemoryStore
 from .services import GoogleServices, ProviderError
 
@@ -116,7 +117,8 @@ class SessionWorker(QThread):
     def run(self):
         try:
             asyncio.run(self._run())
-        except Exception:  # noqa: BLE001 - never expose provider exceptions or signed URLs
+        except Exception as exc:  # noqa: BLE001 - logs exclude exception values and user data
+            record_exception('worker thread failed', exc)
             self._emit(self.log, "La sesión terminó por un error interno. Puedes volver a iniciarla.")
         finally:
             self._loop = None
@@ -144,6 +146,7 @@ class SessionWorker(QThread):
         try:
             if self.mode == "demo":
                 self._emit(self.status, "Demo activa (sin servicios de nube)")
+                await self._initial_greeting(None)
                 await self._consume(None)
             else:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(20.0)) as client:
@@ -168,10 +171,15 @@ class SessionWorker(QThread):
         except ProviderError as exc:
             self._emit(self.log, str(exc))
         except QwenDependencyError as exc:
+            record_exception('Qwen dependency missing', exc)
+            self._emit(self.log, str(exc))
+        except QwenResourceError as exc:
+            record_exception('Qwen resources unavailable', exc)
             self._emit(self.log, str(exc))
         except TimeoutError:
             self._emit(self.log, "Se agotó el tiempo de espera. Intenta iniciar de nuevo.")
-        except Exception:  # noqa: BLE001 - never expose provider exceptions or signed URLs
+        except Exception as exc:  # noqa: BLE001 - logs exclude exception values and user data
+            record_exception('session startup failed', exc)
             self._emit(self.log, "No se pudo completar la sesión. Comprueba la conexión y la configuración.")
         finally:
             while not self._queue.empty():
@@ -259,12 +267,18 @@ class SessionWorker(QThread):
                     continue
                 text = self._policy.greeting(event) if event.kind == "join" else event.text
                 if self.mode == "demo":
-                    played = await self._play(text, await self._synthesize_local(text))
-                    if event.kind == "join" and self._memory and played:
-                        self._memory.mark_greeted(self._room_key, viewer_id)
-                    elif event.kind == 'join' and not played:
-                        self._emit(self.log, "No se confirmó el audio del saludo; se mantiene en cola para reintentar.")
-                        await asyncio.sleep(5)
+                    try:
+                        played = await self._play(text, await self._synthesize_local(text))
+                        if event.kind == "join" and self._memory and played:
+                            self._memory.mark_greeted(self._room_key, viewer_id)
+                        elif event.kind == 'join' and not played:
+                            self._emit(self.log, "No se confirmó el audio del saludo; se mantiene en cola para reintentar.")
+                            await asyncio.sleep(5)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - keep the demo window alive on engine errors
+                        record_exception('demo event synthesis failed', exc)
+                        self._emit(self.log, self._voice_error_message(exc))
                     continue
                 if self._uses_cloud(event) and self._admitted >= self.CLOUD_BUDGET and event.kind != "join":
                     self._report_budget()
@@ -305,6 +319,13 @@ class SessionWorker(QThread):
                         self._emit(self.log, f"No se pudo sintetizar este mensaje; no se repetirá el comentario: {exc}")
                         continue
                 except QwenDependencyError as exc:
+                    record_exception('Qwen dependency missing during narration', exc)
+                    self._emit(self.log, str(exc))
+                    if event.kind == 'join':
+                        await asyncio.sleep(5)
+                    continue
+                except QwenResourceError as exc:
+                    record_exception('Qwen resources unavailable during narration', exc)
                     self._emit(self.log, str(exc))
                     if event.kind == 'join':
                         await asyncio.sleep(5)
@@ -330,9 +351,31 @@ class SessionWorker(QThread):
                     self._queue.task_done()
 
     async def _synthesize(self, text, services):
-        if self.settings.tts_engine == 'local' or self.mode == 'demo':
+        if self.settings.tts_engine in ('local', 'qwen') or self.mode == 'demo':
             return await self._synthesize_local(text)
         return await services.synthesize(text)
+
+    @staticmethod
+    def _voice_error_message(error):
+        if isinstance(error, (QwenDependencyError, QwenResourceError)):
+            return str(error)
+        return 'Falló la voz de la demo. La ventana sigue abierta; consulta los registros técnicos.'
+
+    async def _initial_greeting(self, services):
+        text = clean_text(self.settings.initial_greeting, 400)
+        if not text:
+            return
+        try:
+            data = await asyncio.wait_for(self._synthesize(text, services), self.TTS_TIMEOUT)
+            played = await self._play(text, data)
+            LOGGER.info('initial_greeting.played success=%s engine=%s', played, self.settings.tts_engine)
+        except asyncio.CancelledError:
+            raise
+        except InterruptedError:
+            LOGGER.info('initial_greeting.cancelled')
+        except Exception as exc:  # noqa: BLE001 - a greeting failure must not stop the live session
+            record_exception('initial AI greeting failed', exc)
+            self._emit(self.log, self._voice_error_message(exc))
 
     def _uses_cloud(self, event):
         tts_cloud = self.settings.tts_engine == 'gemini'
@@ -343,6 +386,7 @@ class SessionWorker(QThread):
     async def _synthesize_local(self, text):
         if self._voice is None:
             engine = QwenVoice if self.settings.tts_engine == 'qwen' else LocalVoice
+            LOGGER.info('local_tts.load.begin engine=%s', self.settings.tts_engine)
             last = {}
             def progress(name, current, total):
                 percent = min(100, current * 100 // max(1, total))
@@ -358,17 +402,17 @@ class SessionWorker(QThread):
                     if percent >= previous + 5 or percent == 100:
                         last[name] = percent
                         self._emit(self.status, f'Descargando Qwen3-TTS · {percent}%')
-                self._voice = await asyncio.to_thread(engine, qwen_progress, self._stop_requested)
+                self._voice = engine(qwen_progress, self._stop_requested)
             else:
                 self._emit(self.status, 'Descargando el modelo de voz local…')
-                self._voice = await asyncio.to_thread(engine, None, progress, self._stop_requested)
+                self._voice = engine(None, progress, self._stop_requested)
+            LOGGER.info('local_tts.load.ready engine=%s', self.settings.tts_engine)
         if isinstance(self._voice, QwenVoice):
-            return await asyncio.to_thread(
-                self._voice.synthesize, text, self.settings.qwen_accent,
-                self.settings.qwen_style, self.settings.pitch, self.settings.gender,
+            return self._voice.synthesize(
+                text, self.settings.qwen_accent, self.settings.qwen_style,
+                self.settings.pitch, self.settings.gender,
             )
-        return await asyncio.to_thread(self._voice.synthesize, text, self.settings.local_voice,
-                                       self.settings.rate)
+        return self._voice.synthesize(text, self.settings.local_voice, self.settings.rate)
 
     async def _play(self, text, data=None):
         if self._stop_requested.is_set():
@@ -457,6 +501,7 @@ class SessionWorker(QThread):
                 raise ConnectionError
             if not connected.is_set():
                 raise TimeoutError
+            await self._initial_greeting(services)
             consumer = asyncio.create_task(self._consume(services))
             disconnect_wait = asyncio.create_task(disconnected.wait())
             tasks.extend((consumer, disconnect_wait))
@@ -469,7 +514,8 @@ class SessionWorker(QThread):
             raise
         except TimeoutError:
             self._emit(self.log, "TikTok o el reproductor no respondieron a tiempo. Inicia de nuevo manualmente.")
-        except Exception:  # noqa: BLE001 - never expose provider exceptions or signed URLs
+        except Exception as exc:  # noqa: BLE001 - logs exclude exception values and user data
+            record_exception('TikTok LIVE connection failed', exc)
             self._emit(self.log, "No se pudo mantener TikTok LIVE. Comprueba que la cuenta esté en directo, la red y el acceso de firma Euler.")
         finally:
             for task in tasks:

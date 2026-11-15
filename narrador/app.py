@@ -10,6 +10,7 @@ from pathlib import Path
 
 from platformdirs import user_config_path
 from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 
 from .config import SecretStore, Settings, load_settings, save_settings
+from .diagnostics import LOGGER, configure_logging, record_exception
 from .memory import MemoryStore
 from .microphone import MicWorker
 from .worker import SessionWorker
@@ -48,6 +50,7 @@ QCheckBox { spacing: 9px; padding: 4px; }
 class MainWindow(QMainWindow):
     def __init__(self, settings_path=None, secret_store=None, worker_factory=None):
         super().__init__()
+        self.log_path = configure_logging()
         self.settings_path = Path(settings_path or user_config_path('TikTokNarradorLive') / 'settings.json')
         self.secret_store = secret_store or SecretStore()
         self.worker_factory = worker_factory or SessionWorker
@@ -188,6 +191,7 @@ class MainWindow(QMainWindow):
         self.mode.setCurrentIndex(max(0, self.mode.findData(settings.mode)))
         self.greetings = QCheckBox('Dar la bienvenida a quienes se unen')
         self.greetings.setChecked(settings.greetings)
+        self.initial_greeting = QLineEdit(settings.initial_greeting)
         self.greeting = QLineEdit(settings.greeting_template)
         self.blocked = QLineEdit(settings.blocked_words)
         self.persona = QLineEdit(settings.persona)
@@ -210,6 +214,7 @@ class MainWindow(QMainWindow):
         self.model.addItem(settings.model)
         form.addRow('Comentarios', self.mode)
         form.addRow('', self.greetings)
+        form.addRow('Saludo inicial · voz IA', self.initial_greeting)
         form.addRow('Saludo · usa {usuario}', self.greeting)
         form.addRow('Palabras bloqueadas', self.blocked)
         form.addRow('Personalidad de la IA', self.persona)
@@ -234,10 +239,19 @@ class MainWindow(QMainWindow):
         self.remember = QCheckBox('Recordar claves en el almacén seguro del sistema')
         self.remember.setChecked(settings.remember)
         api_form.addRow(self.remember)
-        privacy = QLabel('Las claves solo se guardan al pulsar Guardar.\nKokoro y Whisper procesan voz localmente. El audio del micrófono no se guarda ni se envía; el dictado se pronuncia con la voz sintética local.\nOllama responde en tu equipo. Gemini solo recibe el contexto si eliges Google para responder y activas el permiso en Comportamiento. Gemini TTS recibe el texto que sintetiza. La demo usa voz local.')
+        privacy = QLabel('Las claves solo se guardan al pulsar Guardar.\nQwen, Kokoro y Whisper procesan voz localmente. El audio del micrófono no se guarda ni se envía; el dictado se pronuncia con la voz sintética local.\nOllama responde en tu equipo. Gemini solo recibe el contexto si eliges Google para responder y activas el permiso en Comportamiento. Gemini TTS recibe el texto que sintetiza. La demo usa la voz seleccionada.')
         privacy.setWordWrap(True)
         privacy.setObjectName('hint')
         api_form.addRow(privacy)
+        log_location = QLabel(f'Los registros técnicos guardan errores y pasos de ejecución, pero no comentarios, claves ni audio.\n{self.log_path}')
+        log_location.setWordWrap(True)
+        log_location.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        log_location.setObjectName('hint')
+        api_form.addRow(log_location)
+        api_form.addRow(self._button(
+            'Abrir carpeta de registros',
+            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.log_path.parent))),
+        ))
         controls = QHBoxLayout()
         self.handle = QLineEdit(settings.handle)
         self.handle.setPlaceholderText('@usuario de TikTok')
@@ -285,6 +299,7 @@ class MainWindow(QMainWindow):
         return Settings(handle=self.handle.text(), language=self.language.text(), gender=self.gender.currentData(),
                         voice=self.voice.currentData() or '', pitch=self.pitch.value(), rate=self.rate.value(),
                         volume=self.volume.value() / 100, mode=self.mode.currentData(), greetings=self.greetings.isChecked(),
+                        initial_greeting=self.initial_greeting.text(),
                         greeting_template=self.greeting.text(), blocked_words=self.blocked.text(), model=self.model.currentText(), reply_provider=self.reply_provider.currentData(),
                         ollama_url=self.ollama_url.text().rstrip('/'), persona=self.persona.text(), activity_context=self.activity_context.text(), remember=self.remember.isChecked(),
                         remember_context=self.remember_context.isChecked(), tts_engine=self.tts_engine.currentData(),
@@ -337,6 +352,8 @@ class MainWindow(QMainWindow):
             self._log('Introduce una clave de Gemini en API y privacidad.')
             return
         self.session_id += 1
+        LOGGER.info('session.start mode=%s tts_engine=%s reply_provider=%s',
+                    mode, settings.tts_engine, settings.reply_provider)
         worker = self.worker_factory(settings, keys, self.session_id, mode=mode)
         self.worker = worker
         self.active_mode = mode
@@ -469,6 +486,7 @@ class MainWindow(QMainWindow):
         self.worker.stop()
 
     def _finished(self):
+        LOGGER.info('session.finished session_id=%s', self.session_id)
         worker = self.worker
         self.worker = None
         self.player.stop()
@@ -529,7 +547,8 @@ class MainWindow(QMainWindow):
                 self.audio_path = audio_file.name
             self.player.setSource(QUrl.fromLocalFile(self.audio_path))
             self.player.play()
-        except OSError:
+        except OSError as exc:
+            record_exception('audio temporary-file preparation failed', exc)
             self._log('No se pudo preparar el audio temporal.')
             self._acknowledge(False)
 
@@ -550,6 +569,7 @@ class MainWindow(QMainWindow):
             self._acknowledge(True)
 
     def _media_error(self, *args):
+        LOGGER.error('audio playback failed error_code=%s', int(self.player.error()))
         self._log('No se pudo reproducir el audio. Comprueba la salida de sonido del sistema.')
         self._remove_audio()
         if self.mic_worker:

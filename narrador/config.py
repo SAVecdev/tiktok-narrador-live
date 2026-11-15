@@ -24,6 +24,7 @@ class Settings:
     volume: float = 0.8
     mode: str = 'read'
     greetings: bool = True
+    initial_greeting: str = 'Hola, ya estoy aquí. Bienvenidos al directo; gracias por acompañarme.'
     greeting_template: str = 'Hola {usuario}, bienvenido al directo.'
     blocked_words: str = ''
     reply_provider: str = 'ollama'

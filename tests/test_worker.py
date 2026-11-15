@@ -95,7 +95,10 @@ def test_demo_has_no_http_client_and_stop_completes_thread(monkeypatch):
     def no_cloud(*args, **kwargs):
         raise AssertionError("Demo must not construct HTTP clients")
     monkeypatch.setattr("narrador.worker.httpx.AsyncClient", no_cloud)
-    worker = SessionWorker(Settings(), {}, 3, mode="demo")
+    async def no_greeting(self, services):
+        return None
+    monkeypatch.setattr(SessionWorker, '_initial_greeting', no_greeting)
+    worker = SessionWorker(Settings(tts_engine='local'), {}, 3, mode="demo")
     worker.start()
     deadline = time.monotonic() + 2
     while worker._queue is None and time.monotonic() < deadline:
@@ -110,6 +113,44 @@ def test_demo_has_no_http_client_and_stop_completes_thread(monkeypatch):
     if worker.isRunning():
         loop.exec()
     assert not worker.isRunning()
+
+
+def test_initial_demo_greeting_uses_the_selected_ai_voice(monkeypatch):
+    worker = prepared(mode='demo', tts_engine='qwen',
+                      initial_greeting='Hola, ya estamos en directo.')
+
+    async def fake_synthesize(text):
+        assert text == 'Hola, ya estamos en directo.'
+        return b'RIFF-ai-voice'
+
+    played = []
+    async def fake_play(text, data):
+        played.append((text, data))
+        return True
+
+    monkeypatch.setattr(worker, '_synthesize_local', fake_synthesize)
+    monkeypatch.setattr(worker, '_play', fake_play)
+    asyncio.run(worker._initial_greeting(None))
+    assert played == [('Hola, ya estamos en directo.', b'RIFF-ai-voice')]
+
+
+def test_demo_voice_error_is_logged_without_ending_consumer(monkeypatch):
+    worker = prepared(mode='demo', tts_engine='local')
+    worker._enqueue(Event('comment', '1', 'Ana', 'hola'))
+
+    async def fail_synthesis(_text):
+        raise RuntimeError('synthetic engine failure')
+
+    monkeypatch.setattr(worker, '_synthesize_local', fail_synthesis)
+
+    async def scenario():
+        task = asyncio.create_task(worker._consume(None))
+        await asyncio.wait_for(worker._queue.join(), 1)
+        assert not task.done()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
 
 
 def test_stop_before_start_is_safe():

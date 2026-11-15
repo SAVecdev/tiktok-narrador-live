@@ -1,3 +1,9 @@
-# Optional, large local TTS runtime. Install after requirements.txt.
-# The Qwen package installs its Transformers, PyTorch/TorchAudio and audio stack.
+# Optional local TTS runtime. CPU PyTorch avoids pulling CUDA/NVIDIA libraries onto
+# machines without a CUDA GPU. For NVIDIA acceleration, install matching PyTorch
+# and TorchAudio wheels from pytorch.org first, then install qwen-tts.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.15.0+cpu; sys_platform != "darwin"
+torchaudio==2.11.1+cpu; sys_platform != "darwin"
+torch==2.15.0; sys_platform == "darwin" and platform_machine == "arm64"
+torchaudio==2.11.1; sys_platform == "darwin" and platform_machine == "arm64"
 qwen-tts==0.1.1
