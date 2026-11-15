@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import wave
 from io import BytesIO
 from pathlib import Path
@@ -307,10 +308,12 @@ class QwenVoice:
         import numpy as np
 
         LOGGER.info('qwen.synthesis.begin')
+        started = time.monotonic()
         samples, rate = self.engine.generate_voice_design(
-            text=text[:1000],
+            text=text[:400],
             language='Spanish',
             instruct=self.instruction(accent, style, pitch, gender),
+            max_new_tokens=min(512, max(96, len(text[:400]) * 2)),
         )
         samples = np.asarray(samples[0], dtype=np.float32)
         if samples.size == 0 or not np.isfinite(samples).all():
@@ -327,4 +330,5 @@ class QwenVoice:
                 output.writeframes(pcm)
             audio = buffer.getvalue()
         LOGGER.info('qwen.synthesis.ready bytes=%s', len(audio))
+        LOGGER.info('qwen.synthesis.complete elapsed_seconds=%.2f', time.monotonic() - started)
         return audio
