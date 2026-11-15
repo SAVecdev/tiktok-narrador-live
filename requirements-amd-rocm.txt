@@ -1,0 +1,6 @@
+# Optional Qwen3-TTS runtime for Linux + AMD RDNA4 (e.g. Radeon RX 9060 XT).
+# Official AMD ROCm 7.14.1 wheels; ROCm exposes the GPU through torch.cuda.
+--extra-index-url https://repo.amd.com/rocm/whl-multi-arch/
+torch[device-gfx1200]==2.12.0+rocm7.14.1
+torchaudio==2.11.0+rocm7.14.1
+qwen-tts==0.1.1
