@@ -14,6 +14,9 @@ que cada distribución. Las modificaciones redistribuidas deben cumplir la licen
 - Kokoro-ONNX runtime: MIT, https://github.com/thewh1teagle/kokoro-onnx
 - Kokoro-82M model and voice vectors (`ef_dora`): Apache-2.0,
   https://huggingface.co/hexgrad/Kokoro-82M
+- Qwen3-TTS Python package: Apache-2.0, https://github.com/QwenLM/Qwen3-TTS
+- Qwen3-TTS 12Hz 1.7B VoiceDesign model: Apache-2.0,
+  https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
 - eSpeak-NG phonemizer runtime: GPL-3.0, https://github.com/espeak-ng/espeak-ng
 - faster-whisper transcription runtime: MIT, https://github.com/SYSTRAN/faster-whisper
 - faster-whisper Tiny checkpoint: MIT, https://huggingface.co/Systran/faster-whisper-tiny

@@ -11,7 +11,7 @@ import httpx
 from PySide6.QtCore import QThread, Signal
 
 from .core import Event, Policy, clean_text
-from .local_voice import LocalVoice
+from .local_voice import LocalVoice, QwenDependencyError, QwenVoice
 from .memory import MemoryStore
 from .services import GoogleServices, ProviderError
 
@@ -167,6 +167,8 @@ class SessionWorker(QThread):
             pass
         except ProviderError as exc:
             self._emit(self.log, str(exc))
+        except QwenDependencyError as exc:
+            self._emit(self.log, str(exc))
         except TimeoutError:
             self._emit(self.log, "Se agotó el tiempo de espera. Intenta iniciar de nuevo.")
         except Exception:  # noqa: BLE001 - never expose provider exceptions or signed URLs
@@ -242,6 +244,8 @@ class SessionWorker(QThread):
                 try:
                     data = await self._synthesize_local(text)
                     await self._play(text, data)
+                except QwenDependencyError as exc:
+                    self._emit(self.log, str(exc))
                 except Exception:  # noqa: BLE001
                     self._emit(self.log, "No se pudo sintetizar el dictado con la voz local.")
                 continue
@@ -300,6 +304,11 @@ class SessionWorker(QThread):
                     else:
                         self._emit(self.log, f"No se pudo sintetizar este mensaje; no se repetirá el comentario: {exc}")
                         continue
+                except QwenDependencyError as exc:
+                    self._emit(self.log, str(exc))
+                    if event.kind == 'join':
+                        await asyncio.sleep(5)
+                    continue
                 except Exception:  # noqa: BLE001 - local runtime can fail without provider context
                     if event.kind == 'join':
                         self._emit(self.log, "No se pudo generar una bienvenida local; se mantiene en cola para reintentar.")
@@ -333,6 +342,7 @@ class SessionWorker(QThread):
 
     async def _synthesize_local(self, text):
         if self._voice is None:
+            engine = QwenVoice if self.settings.tts_engine == 'qwen' else LocalVoice
             last = {}
             def progress(name, current, total):
                 percent = min(100, current * 100 // max(1, total))
@@ -340,7 +350,23 @@ class SessionWorker(QThread):
                 if percent >= previous + 5 or percent == 100:
                     last[name] = percent
                     self._emit(self.status, f"Descargando voz local · {percent}%")
-            self._voice = await asyncio.to_thread(LocalVoice, None, progress, self._stop_requested)
+            if engine is QwenVoice:
+                self._emit(self.status, 'Descargando Qwen3-TTS 1.7B (aprox. 4,5 GB) y preparando la voz…')
+                def qwen_progress(name, current, total):
+                    percent = min(100, current * 100 // max(1, total))
+                    previous = last.get(name, -5)
+                    if percent >= previous + 5 or percent == 100:
+                        last[name] = percent
+                        self._emit(self.status, f'Descargando Qwen3-TTS · {percent}%')
+                self._voice = await asyncio.to_thread(engine, qwen_progress, self._stop_requested)
+            else:
+                self._emit(self.status, 'Descargando el modelo de voz local…')
+                self._voice = await asyncio.to_thread(engine, None, progress, self._stop_requested)
+        if isinstance(self._voice, QwenVoice):
+            return await asyncio.to_thread(
+                self._voice.synthesize, text, self.settings.qwen_accent,
+                self.settings.qwen_style, self.settings.pitch, self.settings.gender,
+            )
         return await asyncio.to_thread(self._voice.synthesize, text, self.settings.local_voice,
                                        self.settings.rate)
 

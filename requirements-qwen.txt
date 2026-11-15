@@ -1,0 +1,3 @@
+# Optional, large local TTS runtime. Install after requirements.txt.
+# The Qwen package installs its Transformers, PyTorch/TorchAudio and audio stack.
+qwen-tts==0.1.1

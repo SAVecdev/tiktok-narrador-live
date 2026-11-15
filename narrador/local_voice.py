@@ -1,15 +1,17 @@
-"""Pinned offline Kokoro voice runtime and verified model download."""
+"""Offline speech engines: lightweight Kokoro and expressive Qwen3-TTS."""
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import sys
 import tempfile
 import wave
+from io import BytesIO
 from pathlib import Path
 
 import httpx
-from platformdirs import user_data_path
+from platformdirs import user_cache_path, user_data_path
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = Path(__file__).resolve().parent / 'voice-models.json'
@@ -100,3 +102,130 @@ class LocalVoice:
                 output.writeframes(pcm)
             buffer.seek(0)
             return buffer.read()
+
+
+QWEN_MODEL_ID = 'Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign'
+QWEN_MODEL_REVISION = 'fa0251e3279a10b4936dc49d69a59c41b07cbfc0'
+QWEN_ACCENTS = {
+    'colombia_medellin': (
+        'Acento de español colombiano de Medellín, Colombia, con un matiz paisa suave, natural y reconocible. '
+        'No uses acento de España ni pronuncies como hablante de inglés.'
+    ),
+    'colombia_bogota': (
+        'Acento de español colombiano de Bogotá, Colombia, claro y conversacional. '
+        'No uses acento de España ni pronuncies como hablante de inglés.'
+    ),
+    'latino_neutral': (
+        'Español latinoamericano neutral y natural, sin imitar el acento de España ni exagerar regionalismos.'
+    ),
+}
+
+
+class QwenDependencyError(RuntimeError):
+    """Actionable error shown when the optional Qwen runtime is missing."""
+
+
+class QwenVoice:
+    """Qwen3-TTS 1.7B voice design; weights are downloaded by Hugging Face on first use."""
+
+    def __init__(self, progress=None, cancelled=None):
+        try:
+            import torch
+            from qwen_tts import Qwen3TTSModel
+            from huggingface_hub import snapshot_download
+            from tqdm.auto import tqdm
+        except ImportError as exc:
+            if getattr(sys, 'frozen', False):
+                message = ('Qwen3-TTS no está incluido en este paquete portable. Usa la versión del código fuente '
+                           'e instala requirements-qwen.txt; Kokoro local sí está disponible en el paquete.')
+            else:
+                message = ('Para usar Qwen3-TTS instala las dependencias locales con: '
+                           'python -m pip install -r requirements-qwen.txt')
+            raise QwenDependencyError(
+                message
+            ) from exc
+
+        model_path = Path(user_cache_path('TikTokNarradorLive')) / 'qwen3-tts-1.7b-voicedesign'
+        model_path.mkdir(parents=True, exist_ok=True)
+
+        class DownloadProgress(tqdm):
+            def update(self, n=1):
+                if cancelled and cancelled.is_set():
+                    raise InterruptedError('Descarga de Qwen3-TTS cancelada.')
+                result = super().update(n)
+                if progress:
+                    progress(self.desc or 'modelo Qwen', self.n, self.total or 0)
+                return result
+
+        if cancelled and cancelled.is_set():
+            raise InterruptedError('Descarga de Qwen3-TTS cancelada.')
+        snapshot_download(
+            repo_id=QWEN_MODEL_ID,
+            revision=QWEN_MODEL_REVISION,
+            local_dir=model_path,
+            max_workers=2,
+            tqdm_class=DownloadProgress,
+        )
+        if cancelled and cancelled.is_set():
+            raise InterruptedError('Descarga de Qwen3-TTS cancelada.')
+
+        if torch.cuda.is_available():
+            device = 'cuda:0'
+            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        elif getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available():
+            device = 'mps'
+            dtype = torch.float16
+        else:
+            device = 'cpu'
+            dtype = torch.float32
+
+        self.engine = Qwen3TTSModel.from_pretrained(
+            str(model_path),
+            local_files_only=True,
+            device_map=device,
+            dtype=dtype,
+        )
+
+    @staticmethod
+    def instruction(accent: str, style: str, pitch: float = 0.0, gender: str = 'FEMALE') -> str:
+        regional = QWEN_ACCENTS.get(accent, QWEN_ACCENTS['colombia_medellin'])
+        voice_gender = {
+            'FEMALE': 'Voz femenina adulta joven,',
+            'MALE': 'Voz masculina adulta joven,',
+            'NEUTRAL': 'Voz adulta de género neutro,',
+        }.get(gender, 'Voz femenina adulta joven,')
+        if pitch >= 8:
+            pitch_text = 'Registro vocal más agudo, sin forzarlo.'
+        elif pitch >= 2:
+            pitch_text = 'Registro vocal ligeramente agudo y luminoso.'
+        elif pitch <= -8:
+            pitch_text = 'Registro vocal más grave, sin forzarlo.'
+        elif pitch <= -2:
+            pitch_text = 'Registro vocal ligeramente más grave.'
+        else:
+            pitch_text = 'Registro vocal natural y medio.'
+        return f'{regional} {voice_gender} {pitch_text} {style.strip()}'.strip()
+
+    def synthesize(self, text: str, accent: str = 'colombia_medellin',
+                   style: str = '', pitch: float = 0.0, gender: str = 'FEMALE') -> bytes:
+        import numpy as np
+
+        samples, rate = self.engine.generate_voice_design(
+            text=text[:1000],
+            language='Spanish',
+            instruct=self.instruction(accent, style, pitch, gender),
+        )
+        samples = np.asarray(samples[0], dtype=np.float32)
+        if samples.size == 0 or not np.isfinite(samples).all():
+            raise RuntimeError('Qwen3-TTS no generó audio utilizable.')
+        peak = float(np.max(np.abs(samples)))
+        if peak > 0.98:
+            samples = samples * (0.98 / peak)
+        pcm = (samples * 32767).astype('<i2').tobytes()
+        with BytesIO() as buffer:
+            with wave.open(buffer, 'wb') as output:
+                output.setnchannels(1)
+                output.setsampwidth(2)
+                output.setframerate(rate)
+                output.writeframes(pcm)
+            return buffer.getvalue()

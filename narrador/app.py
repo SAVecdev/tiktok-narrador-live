@@ -123,7 +123,8 @@ class MainWindow(QMainWindow):
         api_page = scroll_page('API y privacidad')
         voice_form = QFormLayout(voice_page)
         self.tts_engine = QComboBox()
-        self.tts_engine.addItem('Local · Kokoro (sin API)', 'local')
+        self.tts_engine.addItem('Local · Qwen3-TTS 1.7B (voz diseñada)', 'qwen')
+        self.tts_engine.addItem('Local · Kokoro (ligero, sin API)', 'local')
         self.tts_engine.addItem('Google AI Studio · Gemini', 'gemini')
         self.tts_engine.setCurrentIndex(max(0, self.tts_engine.findData(settings.tts_engine)))
         self.language = QLineEdit(settings.language)
@@ -140,6 +141,12 @@ class MainWindow(QMainWindow):
         self.local_voice = QComboBox()
         self.local_voice.addItem('Dora · femenina, español', 'ef_dora')
         self.local_voice.setCurrentIndex(max(0, self.local_voice.findData(settings.local_voice)))
+        self.qwen_accent = QComboBox()
+        self.qwen_accent.addItem('Colombia · Medellín (paisa suave)', 'colombia_medellin')
+        self.qwen_accent.addItem('Colombia · Bogotá', 'colombia_bogota')
+        self.qwen_accent.addItem('Latinoamericano neutral', 'latino_neutral')
+        self.qwen_accent.setCurrentIndex(max(0, self.qwen_accent.findData(settings.qwen_accent)))
+        self.qwen_style = QLineEdit(settings.qwen_style)
         self.gender.currentIndexChanged.connect(self._filter_voices)
         self.language.textChanged.connect(self._filter_voices)
         self.pitch = QDoubleSpinBox()
@@ -150,13 +157,15 @@ class MainWindow(QMainWindow):
         self.rate.setSingleStep(.1)
         self.rate.setValue(settings.rate)
         voice_form.addRow('Motor de voz', self.tts_engine)
-        voice_form.addRow('Voz local (Kokoro)', self.local_voice)
+        voice_form.addRow('Voz ligera (Kokoro)', self.local_voice)
+        voice_form.addRow('Acento Qwen3-TTS', self.qwen_accent)
+        voice_form.addRow('Estilo Qwen (editable)', self.qwen_style)
         voice_form.addRow('Voz Gemini TTS', self.voice)
         voice_form.addRow('Idioma (p. ej., es-US)', self.language)
         voice_form.addRow('Género de voz', self.gender)
         voice_form.addRow('Tono (−20 a +20)', self.pitch)
         voice_form.addRow('Velocidad (0,25 a 4)', self.rate)
-        voice_note = QLabel('Dora es la única voz femenina en español de este modelo; no ofrece un acento latino regional específico. La voz es sintética, no una copia de tu identidad vocal. Tono y velocidad avanzados aplican a Gemini; la voz local permite ajustar velocidad.')
+        voice_note = QLabel('Qwen3-TTS diseña la voz según género, tonalidad y estilo. Puedes solicitar acento de Medellín o Bogotá, pero son descripciones, no grabaciones colombianas; el resultado puede variar. La primera ejecución descarga unos 4,5 GB y requiere instalar requirements-qwen.txt. El dictado se sintetiza con voz IA; no clona tu identidad vocal. Kokoro es la alternativa ligera.')
         voice_note.setWordWrap(True)
         voice_note.setObjectName('hint')
         voice_form.addRow(voice_note)
@@ -280,7 +289,8 @@ class MainWindow(QMainWindow):
                         ollama_url=self.ollama_url.text().rstrip('/'), persona=self.persona.text(), activity_context=self.activity_context.text(), remember=self.remember.isChecked(),
                         remember_context=self.remember_context.isChecked(), tts_engine=self.tts_engine.currentData(),
                         allow_context_cloud=self.allow_context_cloud.isChecked(),
-                        local_voice=self.local_voice.currentData(), mic_enabled=self.mic_worker is not None).validate()
+                        local_voice=self.local_voice.currentData(), qwen_accent=self.qwen_accent.currentData(),
+                        qwen_style=self.qwen_style.text(), mic_enabled=self.mic_worker is not None).validate()
 
     def _save(self):
         try:
@@ -346,14 +356,19 @@ class MainWindow(QMainWindow):
         self._start('preview' if engine == 'gemini' else 'preview_local')
 
     def _tts_changed(self):
-        local = self.tts_engine.currentData() == 'local'
+        engine = self.tts_engine.currentData()
+        local = engine == 'local'
+        qwen = engine == 'qwen'
         self.local_voice.setEnabled(local)
-        self.voice.setEnabled(not local)
-        self.language.setEnabled(not local)
-        self.gender.setEnabled(not local)
-        self.pitch.setEnabled(not local)
-        self.rate.setRange(.75, 1.25) if local else self.rate.setRange(.25, 4)
-        self.rate.setSingleStep(.05 if local else .1)
+        self.qwen_accent.setEnabled(qwen)
+        self.qwen_style.setEnabled(qwen)
+        self.voice.setEnabled(engine == 'gemini')
+        self.language.setEnabled(engine == 'gemini')
+        self.gender.setEnabled(engine in ('gemini', 'qwen'))
+        self.pitch.setEnabled(engine == 'gemini' or qwen)
+        self.rate.setEnabled(engine != 'qwen')
+        self.rate.setRange(.75, 1.25) if engine != 'gemini' else self.rate.setRange(.25, 4)
+        self.rate.setSingleStep(.05 if engine != 'gemini' else .1)
 
     def _toggle_microphone(self):
         if self.mic_worker is not None:

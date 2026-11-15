@@ -6,7 +6,7 @@ Aplicación de escritorio gratuita y de código abierto que escucha comentarios 
 
 ## Probar en desarrollo
 
-Requiere Python 3.12 o posterior y una sesión gráfica con audio. En Mac Intel, usa Python 3.12 o 3.13 (ONNX Runtime aún no publica rueda Intel para Python 3.14). En Linux, el micrófono requiere PortAudio del sistema (por ejemplo, `libportaudio2` en Ubuntu/Debian); Kokoro TTS funciona sin dispositivo de entrada.
+Requiere Python 3.12 o posterior y una sesión gráfica con audio. En Mac Intel, usa Python 3.12 o 3.13 (ONNX Runtime aún no publica rueda Intel para Python 3.14). En Linux, el micrófono requiere PortAudio del sistema (por ejemplo, `libportaudio2` en Ubuntu/Debian). Para la opción principal de voz local Qwen3-TTS instala también `requirements-qwen.txt`; sus dependencias de PyTorch y audio ocupan bastante más que las de la app. Una GPU compatible reduce la espera; en CPU la generación puede ser lenta.
 
 ```bash
 python -m venv .venv
@@ -14,10 +14,11 @@ python -m venv .venv
 # Linux/macOS:
 source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements-qwen.txt
 python run.py
 ```
 
-Pulsa **Demo** y simula un comentario o una llegada para probar la interfaz. Kokoro local es la voz predeterminada; la primera prueba descarga el modelo int8 (unos 88 MiB) y las voces (unos 27 MiB) y verifica sus SHA-256. La demo no requiere clave de API. Activa el micrófono desde **Voz** para transcribir localmente y repetir lo que dices con Dora; la primera activación descarga el modelo Whisper Tiny (unos 75 MiB).
+Pulsa **Demo** y simula un comentario o una llegada para probar la interfaz. Qwen3-TTS 1.7B VoiceDesign es la voz local predeterminada. Al generar el primer audio, Qwen descarga sus pesos (el modelo ocupa unos 4,52 GB) y los mantiene en la caché local de Hugging Face; el código fija una revisión del modelo. La demo no requiere clave de API. En Linux o Windows sin GPU compatible, la primera síntesis puede tardar bastante. Kokoro sigue disponible como alternativa ligera: descarga el modelo int8 (unos 88 MiB) y las voces (unos 27 MiB), verifica sus SHA-256 y funciona sin GPU. Activa el micrófono desde **Voz** para transcribir localmente y repetir lo que dices con la voz sintética seleccionada; Whisper Tiny descarga unos 75 MiB la primera vez.
 
 ## Preparar servicios externos
 
@@ -31,7 +32,11 @@ La app solo habla las respuestas en el audio del ordenador. No publica comentari
 
 ## Configuración de voz
 
-En **Voz** elige Kokoro local o Gemini TTS. La voz local femenina en español `ef_dora` funciona sin API y se descarga una vez; el modelo publica una voz femenina en español, pero no garantiza un acento latino regional. El micrófono se activa de forma explícita, Whisper transcribe en el equipo y nunca se guarda ni se sube audio. Los dictados se sintetizan con la voz IA seleccionada y esperan su turno sin interrumpir lo que ya está hablando. El control de tono avanzado y las voces de otros géneros están disponibles con Gemini; Kokoro permite elegir la voz y ajustar la velocidad entre 0,75 y 1,25.
+En **Voz** elige Qwen3-TTS local, Kokoro local o Gemini TTS. Qwen VoiceDesign genera una voz a partir de instrucciones: el perfil inicial es mujer adulta joven, expresiva y ligeramente coqueta, con opciones de acento de Medellín, Bogotá y español latino neutral. Es una descripción para el generador, no una grabación ni una voz colombiana certificada; el modelo puede aproximarse de forma distinta en cada frase. El control de tonalidad se traduce a una instrucción de voz. El modelo oficial admite español y diseño de voces por texto, pero sus voces `CustomVoice` pregrabadas no incluyen una voz colombiana. [Detalles y voces compatibles de Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS).
+
+Qwen3-TTS 1.7B está bajo Apache-2.0 y sus pesos se descargan de Hugging Face bajo demanda; no se suben al repositorio ni se incluyen en los paquetes portables. Para responder en LIVE sin retrasos conviene probar primero **Probar voz** en el equipo que se usará. Kokoro es la alternativa ligera si el hardware no alcanza. El micrófono se activa de forma explícita, Whisper transcribe en el equipo y el audio no se guarda ni se sube. Los dictados esperan su turno sin interrumpir lo que ya está hablando.
+
+Los paquetes portables actuales todavía no incluyen PyTorch ni el runtime `qwen-tts`; para usar Qwen instálalo desde el código fuente siguiendo los pasos anteriores. En el paquete portable puedes seleccionar Kokoro o Gemini.
 
 En **Comportamiento**, escribe la actividad y los datos que deben servir de contexto. Si marcas **Guardar contexto**, se conserva una copia local en SQLite para futuros directos; al desmarcarla y guardar, se borra ese contexto persistente. Puedes borrar la memoria desde la misma pestaña. Gemini solo recibe esa actividad y memoria si marcas además su casilla de permiso.
 

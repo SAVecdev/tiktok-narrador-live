@@ -35,8 +35,12 @@ class Settings:
     remember: bool = False
     remember_context: bool = False
     allow_context_cloud: bool = False
-    tts_engine: str = 'local'
+    tts_engine: str = 'qwen'
     local_voice: str = 'ef_dora'
+    qwen_accent: str = 'colombia_medellin'
+    qwen_style: str = ('Voz adulta joven, natural y expresiva; extrovertida, cálida y juguetona, '
+                       'ligeramente coqueta sin sonar infantil ni caricaturesca. Pronuncia español con claridad, '
+                       'conversación ágil y pausas naturales.')
     mic_enabled: bool = False
 
     def validate(self) -> Settings:
@@ -58,8 +62,9 @@ class Settings:
                 or not 0 <= self.volume <= 1
                 or not re.fullmatch(r'[a-z]{2,3}-[A-Za-z0-9-]{2,20}', self.language)
                 or self.reply_provider not in ('ollama', 'gemini')
-                or self.tts_engine not in ('local', 'gemini')
+                or self.tts_engine not in ('local', 'qwen', 'gemini')
                 or self.local_voice not in ('ef_dora', 'ef_sarah', 'ef_nicole', 'ef_kore')
+                or self.qwen_accent not in ('colombia_medellin', 'colombia_bogota', 'latino_neutral')
                 or not re.fullmatch(r'https?://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]{1,5})?', self.ollama_url.rstrip('/'))
                 or not re.fullmatch(r'[A-Za-z0-9._:-]+', self.model)
                 or (self.voice and not re.fullmatch(r'[A-Za-z0-9-]+', self.voice))):
