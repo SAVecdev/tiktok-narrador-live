@@ -31,6 +31,9 @@ class FakeServices:
         self.calls.append(text)
         return b"RIFF-test"
 
+    async def greet(self, name):
+        return f'¡Qué gusto verte, {name}!'
+
 
 async def settle():
     for _ in range(8):
@@ -338,12 +341,12 @@ def test_late_join_is_persistent_priority_and_marked_after_audio(tmp_path):
         service = FakeServices()
         task = asyncio.create_task(worker._consume(service))
         await settle()
-        assert spoken == ['Hola Ana, bienvenida.']
+        assert spoken == ['¡Qué gusto verte, Ana!']
         assert worker._memory.pending_joins('room-1') == [('viewer-1', 'Ana')]
         worker._acknowledge()
         await settle()
         assert worker._memory.pending_joins('room-1') == []
-        assert service.calls == ['Hola Ana, bienvenida.']
+        assert service.calls == ['¡Qué gusto verte, Ana!']
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
     asyncio.run(scenario())
