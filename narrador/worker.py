@@ -275,6 +275,12 @@ class SessionWorker(QThread):
             try:
                 if event.kind != "join" and time.monotonic() - event.created > self.MAX_AGE:
                     continue
+                if event.kind == "join":
+                    self._emit(self.log, f"Evento de entrada al LIVE · @{event.name}; se preparará una bienvenida.")
+                elif self.settings.mode == "answer":
+                    self._emit(self.log, f"Comentario recibido de TikTok · @{event.name}: {event.text}")
+                else:
+                    self._emit(self.log, f"Comentario recibido de TikTok (lectura literal) · @{event.name}: {event.text}")
                 text = (await self._personalized_greeting(event, services)
                         if event.kind == "join" else event.text)
                 if self.mode == "demo":
@@ -313,6 +319,7 @@ class SessionWorker(QThread):
                     if time.monotonic() - event.created > self.MAX_AGE:
                         self._emit(self.log, "La respuesta llegó tarde; se omite para no interrumpir el directo.")
                         continue
+                    self._emit(self.log, f"Respuesta generada por IA para @{event.name} · comentario: {event.text} · respuesta: {text}")
                 try:
                     if event.kind == 'join' and not use_cloud and self.settings.tts_engine == 'gemini':
                         data = await asyncio.wait_for(self._synthesize_local(text), self.TTS_TIMEOUT)
