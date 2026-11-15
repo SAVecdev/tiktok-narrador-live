@@ -82,13 +82,16 @@ def load_settings(path: str | Path) -> tuple[Settings, str | None]:
         migrated_local_voice = data.get('tts_engine') == 'local' and 'qwen_accent' not in data
         if migrated_local_voice:
             data['tts_engine'] = 'qwen'
+        migrated_greeting_style = '{usuario}' in str(data.get('greeting_template', ''))
+        if migrated_greeting_style:
+            data['greeting_template'] = Settings().greeting_template
         allowed = {f.name for f in fields(Settings)}
         settings = Settings(**{k: v for k, v in data.items() if k in allowed}).validate()
-        if migrated_local_voice:
+        if migrated_local_voice or migrated_greeting_style:
             try:
                 save_settings(settings, path)
             except OSError:
-                return settings, 'Se activó Qwen3-TTS como voz local; no se pudo guardar esta actualización.'
+                return settings, 'Se actualizó la configuración de voz y saludos, pero no se pudo guardar esta actualización.'
         if not settings.remember_context and settings.activity_context:
             settings.activity_context = ''
             try:
