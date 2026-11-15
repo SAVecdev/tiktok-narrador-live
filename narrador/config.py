@@ -30,7 +30,7 @@ class Settings:
     blocked_words: str = ''
     reply_provider: str = 'ollama'
     ollama_url: str = 'http://localhost:11434'
-    model: str = 'llama3.2'
+    model: str = 'qwen3.5:4b'
     persona: str = ('Responde en español de forma breve, extrovertida, cálida y juguetona, con un toque '
                     'ligeramente coqueto y siempre apropiado para un directo.')
     activity_context: str = ''
