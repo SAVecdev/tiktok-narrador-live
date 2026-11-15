@@ -28,6 +28,8 @@ Las claves se escriben en la pestaña **API y privacidad**. **Guardar** recuerda
 2. La clave de AI Studio también sirve si eliges respuestas con Gemini. Ollama es el modo local predeterminado. Puedes elegir el modo «Leer comentarios», «Responder con IA» o «Ignorar comentarios». En «¿Qué estás haciendo en el directo?» describe el juego o actividad para dar contexto a las respuestas. Ollama usa ese contexto sin enviarlo a Google.
 3. Escribe el nombre de usuario del creador sin `@` y usa **Iniciar LIVE** cuando esté transmitiendo. Euler Stream es un servicio externo opcional para firmar la conexión de TikTok; la disponibilidad pública sin clave puede variar. No se promete acceso gratuito o disponibilidad permanente.
 
+Si TikTok o la red corta el WebSocket de LIVE, la sesión permanece abierta y la app reintenta la conexión automáticamente con esperas progresivas. El estado y los reintentos aparecen en **Actividad de la sesión**; pulsa **Detener** para cancelar los reintentos.
+
 La app solo habla las respuestas en el audio del ordenador. No publica comentarios en TikTok. Puedes capturar el audio de escritorio en OBS. Ollama local recibe el comentario y la actividad indicada. Gemini TTS recibe el texto convertido en voz; si eliges Gemini para responder, también recibe el comentario, nombre y actividad del directo. Las claves se envían solo al proveedor al que pertenecen. Las palabras bloqueadas se filtran antes de enviar contenido.
 
 ## Configuración de voz
