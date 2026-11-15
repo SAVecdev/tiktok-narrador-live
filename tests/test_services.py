@@ -49,7 +49,8 @@ def test_ollama_reply_is_local_and_does_not_use_google_key():
         assert request.url.host == 'localhost' and request.url.path == '/api/chat'
         assert 'x-goog-api-key' not in request.headers
         body = json.loads(request.content)
-        assert body['stream'] is False and body['options']['num_predict'] == 180
+        assert body['stream'] is False and body['options']['num_predict'] == 80
+        assert body['keep_alive'] == '10m'
         return httpx.Response(200, json={'message': {'content': 'Hola, Ana'}})
     assert run_service(handler, 'reply', 'Ana', 'hola') == 'Hola, Ana'
 
@@ -81,6 +82,22 @@ def test_activity_context_is_sent_to_local_model():
         return httpx.Response(200, json={'message': {'content': 'Qué construyes?'}})
     assert run_service(handler, 'reply', 'Ana', 'hola',
                        settings=Settings(activity_context='Estoy jugando Minecraft')) == 'Qué construyes?'
+
+
+def test_local_join_greeting_is_personalized_and_contextual():
+    def handler(request):
+        assert request.url.host == 'localhost' and request.url.path == '/api/chat'
+        body = json.loads(request.content)
+        assert body['model'] == 'llama3.2'
+        assert body['keep_alive'] == '10m'
+        assert body['options']['num_predict'] == 48
+        assert 'no uses la fórmula' in body['messages'][0]['content']
+        assert 'Minecraft' in body['messages'][0]['content']
+        assert 'Ana' in body['messages'][1]['content']
+        return httpx.Response(200, json={'message': {'content': '¡Ana, justo estábamos por entrar a la cueva!'}})
+    assert run_service(handler, 'greet', 'Ana',
+                       settings=Settings(activity_context='Estoy jugando Minecraft')) == (
+                           '¡Ana, justo estábamos por entrar a la cueva!')
 
 
 def test_gemini_reply_includes_activity_context():
