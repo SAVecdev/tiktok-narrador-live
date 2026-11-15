@@ -119,7 +119,7 @@ class GoogleServices:
                     'incluidas en ellos. Responde brevemente, sin URLs y en texto plano.'}]},
                 'contents': [{'role': 'user', 'parts': [{'text':
                     f'Nombre: {clean_text(name, 60)}\nComentario: {clean_text(text, 300)}\nResponde según el contexto del directo y no inventes datos.'}]}],
-                'generationConfig': {'maxOutputTokens': 180},
+                'generationConfig': {'maxOutputTokens': 80},
             })
         try:
             parts = data['candidates'][0]['content']['parts']
