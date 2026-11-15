@@ -1,6 +1,8 @@
 """Offline concurrency tests; no credentials, live stream or cloud calls."""
 import asyncio
+import sys
 import time
+from types import ModuleType, SimpleNamespace
 
 from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 
@@ -132,6 +134,27 @@ def test_initial_demo_greeting_uses_the_selected_ai_voice(monkeypatch):
     monkeypatch.setattr(worker, '_play', fake_play)
     asyncio.run(worker._initial_greeting(None))
     assert played == [('Hola, ya estamos en directo.', b'RIFF-ai-voice')]
+
+
+def test_local_voice_inference_does_not_block_asyncio_loop(monkeypatch):
+    class BlockingVoice:
+        def __init__(self, *_args):
+            pass
+
+        def synthesize(self, text, *_args):
+            time.sleep(0.2)
+            return text.encode()
+
+    monkeypatch.setattr('narrador.worker.LocalVoice', BlockingVoice)
+    worker = prepared(mode='demo', tts_engine='local')
+
+    async def scenario():
+        synthesis = asyncio.create_task(worker._synthesize_local('hola'))
+        await asyncio.sleep(0.02)
+        assert not synthesis.done()
+        assert await asyncio.wait_for(synthesis, 1) == b'hola'
+
+    asyncio.run(scenario())
 
 
 def test_demo_voice_error_is_logged_without_ending_consumer(monkeypatch):
@@ -284,4 +307,90 @@ def test_late_join_is_persistent_priority_and_marked_after_audio(tmp_path):
         assert service.calls == ['Hola Ana, bienvenida.']
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+    asyncio.run(scenario())
+
+
+def test_live_reconnects_after_connection_closed_error(monkeypatch):
+    connect_event = type('ConnectEvent', (), {})
+    disconnect_event = type('DisconnectEvent', (), {})
+    comment_event = type('CommentEvent', (), {})
+    join_event = type('JoinEvent', (), {})
+    connected_again = asyncio.Event()
+    clients = []
+
+    class FakeClient:
+        def __init__(self, unique_id):
+            self.unique_id = unique_id
+            self.handlers = {}
+            self.logger = SimpleNamespace(disabled=False)
+            self.stopped = asyncio.Event()
+            self.closed = False
+            clients.append(self)
+
+        def add_listener(self, event, callback):
+            self.handlers[event] = callback
+
+        async def start(self):
+            if len(clients) == 1:
+                async def fail_connection():
+                    raise ConnectionError('test-only dropped websocket')
+                return asyncio.create_task(fail_connection())
+
+            async def wait_for_disconnect():
+                await self.stopped.wait()
+
+            task = asyncio.create_task(wait_for_disconnect())
+            await self.handlers[connect_event](SimpleNamespace(room_id=None))
+            connected_again.set()
+            return task
+
+        async def disconnect(self, close_client=False):
+            self.stopped.set()
+
+        async def close(self):
+            self.closed = True
+
+    tiktok = ModuleType('TikTokLive')
+    tiktok.__path__ = []
+    tiktok.TikTokLiveClient = FakeClient
+    client_pkg = ModuleType('TikTokLive.client')
+    client_pkg.__path__ = []
+    web_pkg = ModuleType('TikTokLive.client.web')
+    web_pkg.__path__ = []
+    settings_pkg = ModuleType('TikTokLive.client.web.web_settings')
+    settings_pkg.WebDefaults = SimpleNamespace(tiktok_sign_api_key=None)
+    events_pkg = ModuleType('TikTokLive.events')
+    events_pkg.ConnectEvent = connect_event
+    events_pkg.DisconnectEvent = disconnect_event
+    events_pkg.CommentEvent = comment_event
+    events_pkg.JoinEvent = join_event
+    errors_pkg = ModuleType('TikTokLive.client.errors')
+    errors_pkg.SignatureRateLimitError = type('SignatureRateLimitError', (Exception,), {})
+    errors_pkg.UserOfflineError = type('UserOfflineError', (Exception,), {})
+    errors_pkg.WebcastBlockedError = type('WebcastBlockedError', (Exception,), {})
+    for name, module in {
+        'TikTokLive': tiktok,
+        'TikTokLive.client': client_pkg,
+        'TikTokLive.client.web': web_pkg,
+        'TikTokLive.client.web.web_settings': settings_pkg,
+        'TikTokLive.events': events_pkg,
+        'TikTokLive.client.errors': errors_pkg,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    async def scenario():
+        worker = prepared(remember_context=False)
+        worker.RECONNECT_BASE_DELAY = 0.01
+        worker.RECONNECT_MAX_DELAY = 0.01
+        async def no_greeting(_services):
+            return None
+        worker._initial_greeting = no_greeting
+        live_task = asyncio.create_task(worker._live(FakeServices()))
+        await asyncio.wait_for(connected_again.wait(), 1)
+        assert len(clients) == 2
+        assert clients[0].closed
+        live_task.cancel()
+        await asyncio.gather(live_task, return_exceptions=True)
+        assert clients[1].closed
+
     asyncio.run(scenario())
