@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import concurrent.futures
 import sqlite3
 import threading
 import time
@@ -33,6 +34,8 @@ class SessionWorker(QThread):
     PLAYBACK_TIMEOUT = 60.0
     MIN_INTERVAL = 2.0
     CLOUD_BUDGET = 100
+    RECONNECT_BASE_DELAY = 3.0
+    RECONNECT_MAX_DELAY = 30.0
 
     def __init__(self, settings, keys, session_id, mode="live",
                  preview_text="Hola, esta es una prueba de voz.", parent=None):
@@ -59,6 +62,10 @@ class SessionWorker(QThread):
         self._memory = None
         self._room_key = str(settings.handle).strip().lstrip('@').casefold() or str(session_id)
         self._voice = None
+        self._voice_lock = threading.Lock()
+        self._voice_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="tiktok-voice"
+        )
         self._join_warned = False
         self._join_storage_error_reported = False
 
@@ -123,6 +130,9 @@ class SessionWorker(QThread):
         finally:
             self._loop = None
             self._main_task = None
+            # A running native inference cannot be interrupted safely. Wait
+            # here so QThread is never destroyed while its voice thread lives.
+            self._voice_executor.shutdown(wait=True, cancel_futures=True)
             self.keys.clear()
             self.status.emit(self.session_id, "Detenido")
 
@@ -384,6 +394,21 @@ class SessionWorker(QThread):
         return self.mode != 'demo' and (tts_cloud or reply_cloud)
 
     async def _synthesize_local(self, text):
+        # Qwen/Kokoro load native runtimes and can spend tens of seconds in
+        # inference. Keep that work off asyncio's loop so TikTokLive can keep
+        # acknowledging websocket frames while audio is generated.
+        future = self._voice_executor.submit(self._synthesize_local_sync, text)
+        while not future.done():
+            await asyncio.sleep(0.05)
+        return future.result()
+
+    def _synthesize_local_sync(self, text):
+        # A timed-out asyncio wrapper cannot stop its underlying thread. Keep
+        # model initialization and inference serialized if another event arrives.
+        with self._voice_lock:
+            return self._synthesize_local_locked(text)
+
+    def _synthesize_local_locked(self, text):
         if self._voice is None:
             engine = QwenVoice if self.settings.tts_engine == 'qwen' else LocalVoice
             LOGGER.info('local_tts.load.begin engine=%s', self.settings.tts_engine)
@@ -441,93 +466,148 @@ class SessionWorker(QThread):
             DisconnectEvent,
             JoinEvent,
         )
+        from TikTokLive.client.errors import SignatureRateLimitError, UserOfflineError, WebcastBlockedError
 
-        connected = asyncio.Event()
-        disconnected = asyncio.Event()
-        client = None
-        tasks = []
         old_key = WebDefaults.tiktok_sign_api_key
+        consumer = None
+        welcomed = False
+        failures = 0
         try:
             WebDefaults.tiktok_sign_api_key = self.keys.get("euler") or None
-            client = TikTokLiveClient(unique_id=self.settings.handle)
-            # Provider diagnostics can contain signed URLs. Only fixed messages leave this adapter.
-            client.logger.disabled = True
-
-            async def on_connect(_event):
-                room_id = getattr(_event, 'room_id', None) or getattr(client, 'room_id', None)
-                if room_id:
-                    self._room_key = f"{self.settings.handle.strip().lstrip('@').casefold()}:{room_id}"
-                    try:
-                        if self._memory is None:
-                            self._memory = MemoryStore()
-                        self._memory.prune_greeted()
-                        self._memory.keep_room_only(self._room_key)
-                    except (OSError, sqlite3.Error):
-                        self._emit(self.log, "No se pudieron limpiar las bienvenidas de directos anteriores.")
-                else:
-                    handle = self.settings.handle.strip().lstrip('@').casefold()
-                    self._room_key = f'{handle}:session-{self.session_id}'
-                    self._emit(self.log, "TikTok no proporcionó el identificador del directo; los saludos pendientes no podrán recuperarse entre sesiones.")
-                connected.set()
-                self._emit(self.status, "Conectado a TikTok LIVE")
-
-            async def on_disconnect(_event):
-                disconnected.set()
-                self._emit(self.status, "Desconectado de TikTok LIVE")
-
-            async def on_comment(event):
-                self._receive_live("comment", event)
-
-            async def on_join(event):
-                self._receive_live("join", event)
-
-            client.add_listener(ConnectEvent, on_connect)
-            client.add_listener(DisconnectEvent, on_disconnect)
-            client.add_listener(CommentEvent, on_comment)
-            client.add_listener(JoinEvent, on_join)
-            self._emit(self.status, "Conectando a TikTok LIVE…")
-            deadline = time.monotonic() + self.CONNECT_TIMEOUT
-            connection_task = await asyncio.wait_for(client.start(), self.CONNECT_TIMEOUT)
-            tasks.append(connection_task)
-            connect_wait = asyncio.create_task(connected.wait())
-            tasks.append(connect_wait)
-            done, _ = await asyncio.wait(
-                (connection_task, connect_wait),
-                timeout=max(0, deadline - time.monotonic()),
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if connection_task in done:
-                await connection_task
-                raise ConnectionError
-            if not connected.is_set():
-                raise TimeoutError
-            await self._initial_greeting(services)
             consumer = asyncio.create_task(self._consume(services))
-            disconnect_wait = asyncio.create_task(disconnected.wait())
-            tasks.extend((consumer, disconnect_wait))
-            done, _ = await asyncio.wait((connection_task, consumer, disconnect_wait),
-                                         return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                await task
-            self._emit(self.log, "La conexión terminó. Inicia de nuevo para reconectar.")
+            while not self._stop_requested.is_set():
+                client = TikTokLiveClient(unique_id=self.settings.handle)
+                client.logger.disabled = True
+                connected = asyncio.Event()
+                disconnected = asyncio.Event()
+                tasks = []
+
+                async def on_connect(_event):
+                    room_id = getattr(_event, 'room_id', None) or getattr(client, 'room_id', None)
+                    if room_id:
+                        self._room_key = f"{self.settings.handle.strip().lstrip('@').casefold()}:{room_id}"
+                        try:
+                            if self._memory is None:
+                                self._memory = MemoryStore()
+                            self._memory.prune_greeted()
+                            self._memory.keep_room_only(self._room_key)
+                        except (OSError, sqlite3.Error):
+                            self._emit(self.log, "No se pudieron limpiar las bienvenidas de directos anteriores.")
+                    else:
+                        handle = self.settings.handle.strip().lstrip('@').casefold()
+                        self._room_key = f'{handle}:session-{self.session_id}'
+                        self._emit(self.log, "TikTok no proporcionó el identificador del directo; los saludos pendientes no podrán recuperarse entre sesiones.")
+                    connected.set()
+                    self._emit(self.status, "Conectado a TikTok LIVE")
+
+                async def on_disconnect(_event):
+                    disconnected.set()
+                    self._emit(self.status, "Desconectado de TikTok LIVE")
+
+                async def on_comment(event):
+                    self._receive_live("comment", event)
+
+                async def on_join(event):
+                    self._receive_live("join", event)
+
+                client.add_listener(ConnectEvent, on_connect)
+                client.add_listener(DisconnectEvent, on_disconnect)
+                client.add_listener(CommentEvent, on_comment)
+                client.add_listener(JoinEvent, on_join)
+                self._emit(self.status, "Conectando a TikTok LIVE…")
+                try:
+                    connection_task = await asyncio.wait_for(client.start(), self.CONNECT_TIMEOUT)
+                    tasks.append(connection_task)
+                    connect_wait = asyncio.create_task(connected.wait())
+                    tasks.append(connect_wait)
+                    done, _ = await asyncio.wait(
+                        (connection_task, connect_wait),
+                        timeout=self.CONNECT_TIMEOUT,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if connection_task in done:
+                        await connection_task
+                        raise ConnectionError('La tarea de conexión terminó antes del evento Connect.')
+                    if not connected.is_set():
+                        raise TimeoutError
+
+                    if not welcomed:
+                        await self._initial_greeting(services)
+                        welcomed = True
+                    disconnect_wait = asyncio.create_task(disconnected.wait())
+                    tasks.append(disconnect_wait)
+                    done, _ = await asyncio.wait(
+                        (connection_task, consumer, disconnect_wait),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if consumer in done:
+                        await consumer
+                        self._emit(self.log, "El procesamiento de mensajes se detuvo; revisa los registros técnicos.")
+                        return
+                    if connection_task in done:
+                        await connection_task
+                    if disconnect_wait in done:
+                        raise ConnectionError('TikTok cerró la conexión LIVE.')
+                    raise ConnectionError('TikTok terminó la tarea de conexión.')
+                except asyncio.CancelledError:
+                    raise
+                except UserOfflineError:
+                    failures += 1
+                    delay = 30.0
+                    self._emit(self.log, f"La cuenta no está en directo; volveré a comprobarlo en {int(delay)} segundos.")
+                except SignatureRateLimitError as exc:
+                    failures += 1
+                    delay = min(max(float(exc.retry_after), self.RECONNECT_BASE_DELAY), 120.0)
+                    self._emit(self.log, f"TikTok limitó la firma; reintentaré en {int(delay)} segundos.")
+                except WebcastBlockedError as exc:
+                    failures += 1
+                    delay = min(self.RECONNECT_BASE_DELAY * (2 ** min(failures - 1, 4)), self.RECONNECT_MAX_DELAY)
+                    record_exception('TikTok rejected the LIVE websocket', exc)
+                    self._emit(self.log, f"TikTok rechazó la conexión. Volveré a intentar en {int(delay)} segundos; revisa Euler si persiste.")
+                except TimeoutError as exc:
+                    failures += 1
+                    delay = min(self.RECONNECT_BASE_DELAY * (2 ** min(failures - 1, 4)), self.RECONNECT_MAX_DELAY)
+                    record_exception('TikTok LIVE connection timed out', exc)
+                    self._emit(self.log, f"TikTok no respondió a tiempo; reintentaré en {int(delay)} segundos.")
+                except Exception as exc:  # noqa: BLE001 - do not log exception values or signed URLs
+                    failures += 1
+                    delay = min(self.RECONNECT_BASE_DELAY * (2 ** min(failures - 1, 4)), self.RECONNECT_MAX_DELAY)
+                    record_exception('TikTok LIVE connection interrupted', exc)
+                    close = getattr(exc, 'rcvd', None)
+                    close_code = getattr(close, 'code', None)
+                    LOGGER.warning('tiktok.connection.retry exception=%s close_code=%s delay=%s',
+                                   type(exc).__name__, close_code, int(delay))
+                    self._emit(self.log, f"TikTok cerró la conexión ({type(exc).__name__}); reintentaré en {int(delay)} segundos.")
+                finally:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    if tasks:
+                        await asyncio.gather(*tasks, return_exceptions=True)
+                    if client is not None:
+                        for method, kwargs in ((client.disconnect, {'close_client': True}),
+                                               (client.close, {})):
+                            cleanup = asyncio.create_task(method(**kwargs))
+                            try:
+                                await asyncio.wait_for(asyncio.shield(cleanup), 5.0)
+                            except asyncio.CancelledError:
+                                cleanup.cancel()
+                                await asyncio.gather(cleanup, return_exceptions=True)
+                                raise
+                            except Exception as exc:  # noqa: BLE001 - keep cleanup warnings private
+                                cleanup.cancel()
+                                await asyncio.gather(cleanup, return_exceptions=True)
+                                LOGGER.warning('tiktok.client.cleanup exception=%s', type(exc).__name__)
+
+                if not self._stop_requested.is_set():
+                    self._emit(self.status, f"Reconectando a TikTok LIVE en {int(delay)} segundos…")
+                    await asyncio.sleep(delay)
         except asyncio.CancelledError:
             raise
-        except TimeoutError:
-            self._emit(self.log, "TikTok o el reproductor no respondieron a tiempo. Inicia de nuevo manualmente.")
-        except Exception as exc:  # noqa: BLE001 - logs exclude exception values and user data
-            record_exception('TikTok LIVE connection failed', exc)
-            self._emit(self.log, "No se pudo mantener TikTok LIVE. Comprueba que la cuenta esté en directo, la red y el acceso de firma Euler.")
         finally:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-            if client is not None:
-                with contextlib.suppress(Exception, asyncio.CancelledError):
-                    await asyncio.wait_for(client.disconnect(close_client=True), 5.0)
-                with contextlib.suppress(Exception, asyncio.CancelledError):
-                    await asyncio.wait_for(client.close(), 5.0)
+            if consumer is not None and not consumer.done():
+                consumer.cancel()
+                await asyncio.gather(consumer, return_exceptions=True)
             WebDefaults.tiktok_sign_api_key = old_key
 
     def _receive_live(self, kind, event):
