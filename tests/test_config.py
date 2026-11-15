@@ -73,3 +73,13 @@ def test_legacy_activity_is_not_loaded_without_memory_opt_in(tmp_path):
     settings, warning = load_settings(path)
     assert warning is None and settings.activity_context == ''
     assert 'private legacy activity' not in path.read_text()
+
+
+def test_legacy_fixed_greeting_becomes_ai_greeting_style(tmp_path):
+    path = tmp_path / 'settings.json'
+    path.write_text(json.dumps({'greeting_template': 'Hola {usuario}, bienvenido al directo.'}))
+    settings, warning = load_settings(path)
+    assert warning is None
+    assert '{usuario}' not in settings.greeting_template
+    assert 'natural' in settings.greeting_template
+    assert '{usuario}' not in path.read_text()
