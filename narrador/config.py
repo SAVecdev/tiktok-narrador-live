@@ -25,7 +25,8 @@ class Settings:
     mode: str = 'read'
     greetings: bool = True
     initial_greeting: str = 'Hola, ya estoy aquí. Bienvenidos al directo; gracias por acompañarme.'
-    greeting_template: str = 'Hola {usuario}, bienvenido al directo.'
+    greeting_template: str = ('Cálido, natural y breve; usa su nombre, menciona la actividad si encaja '
+                              'y termina con una pregunta ligera.')
     blocked_words: str = ''
     reply_provider: str = 'ollama'
     ollama_url: str = 'http://localhost:11434'
