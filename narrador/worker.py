@@ -401,6 +401,7 @@ class SessionWorker(QThread):
         text = clean_text(self.settings.initial_greeting, 400)
         if not text:
             return
+        self._emit(self.log, f"Saludo inicial generado por la app (no corresponde a un comentario) · {text}")
         try:
             data = await asyncio.wait_for(self._synthesize(text, services), self.TTS_TIMEOUT)
             played = await self._play(text, data)
