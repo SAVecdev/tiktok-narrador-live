@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from narrador import local_voice
-from narrador.local_voice import LocalVoice, QwenResourceError, _verified
+from narrador.local_voice import LocalVoice, QwenResourceError, QwenVoice, _verified
 
 
 def test_downloaded_models_match_pinned_hashes_and_synthesize_spanish():
@@ -59,6 +59,22 @@ def test_qwen_preflight_rejects_low_memory_before_starting_worker(monkeypatch):
 
     with pytest.raises(QwenResourceError):
         local_voice.preload_qwen_runtime()
+
+
+def test_qwen_voice_limits_generation_to_comment_length():
+    import numpy as np
+
+    class Engine:
+        def generate_voice_design(self, **kwargs):
+            self.kwargs = kwargs
+            return [np.zeros(2400, dtype=np.float32)], 24000
+
+    voice = object.__new__(QwenVoice)
+    voice.engine = Engine()
+    text = 'Hola, Ana. Qué bueno que llegaste al directo.'
+    wav = voice.synthesize(text)
+    assert wav.startswith(b'RIFF')
+    assert voice.engine.kwargs['max_new_tokens'] == max(96, len(text) * 2)
 
 
 def test_qwen_preflight_bypasses_the_crashing_triton_loader():
