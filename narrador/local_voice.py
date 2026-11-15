@@ -88,6 +88,7 @@ class LocalVoice:
     def synthesize(self, text: str, voice: str = 'ef_dora', speed: float = 1.0) -> bytes:
         import numpy as np
 
+        LOGGER.info('kokoro.synthesis.begin')
         samples, rate = self.engine.create(text[:1000], voice=voice, speed=max(.75, min(1.25, speed)), lang='es')
         samples = np.asarray(samples, dtype=np.float32)
         if samples.size == 0 or not np.isfinite(samples).all():
@@ -103,7 +104,9 @@ class LocalVoice:
                 output.setframerate(rate)
                 output.writeframes(pcm)
             buffer.seek(0)
-            return buffer.read()
+            audio = buffer.read()
+        LOGGER.info('kokoro.synthesis.ready bytes=%s', len(audio))
+        return audio
 
 
 QWEN_MODEL_ID = 'Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign'
@@ -289,6 +292,7 @@ class QwenVoice:
                    style: str = '', pitch: float = 0.0, gender: str = 'FEMALE') -> bytes:
         import numpy as np
 
+        LOGGER.info('qwen.synthesis.begin')
         samples, rate = self.engine.generate_voice_design(
             text=text[:1000],
             language='Spanish',
@@ -307,4 +311,6 @@ class QwenVoice:
                 output.setsampwidth(2)
                 output.setframerate(rate)
                 output.writeframes(pcm)
-            return buffer.getvalue()
+            audio = buffer.getvalue()
+        LOGGER.info('qwen.synthesis.ready bytes=%s', len(audio))
+        return audio
