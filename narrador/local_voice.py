@@ -131,31 +131,83 @@ class QwenResourceError(RuntimeError):
     """Actionable error when the machine cannot safely load the 1.7B model."""
 
 
+_QWEN_MODULES = None
 _QWEN_RUNTIME = None
+_LOCAL_RUNTIME = None
 
 
-def preload_qwen_runtime():
+def preload_local_runtime():
+    """Import native Kokoro dependencies on the GUI thread before starting a worker."""
+    global _LOCAL_RUNTIME
+    if _LOCAL_RUNTIME is None:
+        LOGGER.info('kokoro.runtime.import.begin')
+        import numpy
+        from kokoro_onnx import Kokoro
+        _LOCAL_RUNTIME = (numpy, Kokoro)
+        LOGGER.info('kokoro.runtime.import.ready')
+    return _LOCAL_RUNTIME
+
+
+def preload_qwen_runtime(refresh_resources=True):
     """Load native Qwen/LLVM dependencies on the GUI thread before starting a worker."""
-    global _QWEN_RUNTIME
-    if _QWEN_RUNTIME is not None:
+    global _QWEN_MODULES, _QWEN_RUNTIME
+    if _QWEN_MODULES is None:
+        LOGGER.info('qwen.runtime.import.begin')
+        try:
+            import torch
+            import psutil
+            import numpy
+            from qwen_tts import Qwen3TTSModel
+            from huggingface_hub import snapshot_download
+            from tqdm.auto import tqdm
+        except ImportError as exc:
+            if getattr(sys, 'frozen', False):
+                message = ('Qwen3-TTS no está incluido en este paquete portable. Usa la versión del código fuente '
+                           'e instala requirements-qwen.txt; Kokoro local sí está disponible en el paquete.')
+            else:
+                message = ('Para usar Qwen3-TTS instala las dependencias locales con: '
+                           'python -m pip install -r requirements-qwen.txt')
+            raise QwenDependencyError(message) from exc
+        _QWEN_MODULES = (torch, psutil, numpy, Qwen3TTSModel, snapshot_download, tqdm)
+        LOGGER.info('qwen.runtime.import.ready')
+
+    if not refresh_resources and _QWEN_RUNTIME is not None:
         return _QWEN_RUNTIME
-    LOGGER.info('qwen.runtime.import.begin')
-    try:
-        import torch
-        import psutil
-        from qwen_tts import Qwen3TTSModel
-        from huggingface_hub import snapshot_download
-        from tqdm.auto import tqdm
-    except ImportError as exc:
-        if getattr(sys, 'frozen', False):
-            message = ('Qwen3-TTS no está incluido en este paquete portable. Usa la versión del código fuente '
-                       'e instala requirements-qwen.txt; Kokoro local sí está disponible en el paquete.')
+
+    torch, psutil, _numpy, Qwen3TTSModel, snapshot_download, tqdm = _QWEN_MODULES
+    LOGGER.info('qwen.resources.check.begin')
+    memory_gib = psutil.virtual_memory().available / (1024 ** 3)
+    if torch.cuda.is_available():
+        free_vram, _total_vram = torch.cuda.mem_get_info(0)
+        if free_vram >= 7 * (1024 ** 3):
+            device = 'cuda:0'
+            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        elif memory_gib >= 12:
+            device = 'cpu'
+            dtype = torch.float32
         else:
-            message = ('Para usar Qwen3-TTS instala las dependencias locales con: '
-                       'python -m pip install -r requirements-qwen.txt')
-        raise QwenDependencyError(message) from exc
-    _QWEN_RUNTIME = (torch, psutil, Qwen3TTSModel, snapshot_download, tqdm)
-    LOGGER.info('qwen.runtime.import.ready')
+            raise QwenResourceError(
+                'Qwen 1.7B necesita unos 7 GB de VRAM libre o 12 GB de RAM disponible. '
+                'Libera memoria o selecciona Kokoro en Voz.'
+            )
+    elif getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available():
+        if memory_gib < 12:
+            raise QwenResourceError(
+                'Qwen 1.7B necesita unos 12 GB de memoria disponible. '
+                'Libera memoria o selecciona Kokoro en Voz.'
+            )
+        device = 'mps'
+        dtype = torch.float16
+    else:
+        if memory_gib < 12:
+            raise QwenResourceError(
+                'Qwen 1.7B necesita unos 12 GB de RAM disponible en este equipo. '
+                'Libera memoria o selecciona Kokoro en Voz.'
+            )
+        device = 'cpu'
+        dtype = torch.float32
+    _QWEN_RUNTIME = (*_QWEN_MODULES, device, dtype, memory_gib)
+    LOGGER.info('qwen.resources.check.ready device=%s memory_available_gib=%.1f', device, memory_gib)
     return _QWEN_RUNTIME
 
 
@@ -163,41 +215,12 @@ class QwenVoice:
     """Qwen3-TTS 1.7B voice design; weights are downloaded by Hugging Face on first use."""
 
     def __init__(self, progress=None, cancelled=None):
-        torch, psutil, Qwen3TTSModel, snapshot_download, tqdm = preload_qwen_runtime()
+        _torch, _psutil, _numpy, Qwen3TTSModel, snapshot_download, tqdm, device, dtype, memory_gib = preload_qwen_runtime(
+            refresh_resources=False
+        )
 
         model_path = Path(user_cache_path('TikTokNarradorLive')) / 'qwen3-tts-1.7b-voicedesign'
-        LOGGER.info('qwen.resources.check.begin')
         model_path.mkdir(parents=True, exist_ok=True)
-        memory_gib = psutil.virtual_memory().available / (1024 ** 3)
-        if torch.cuda.is_available():
-            free_vram, _total_vram = torch.cuda.mem_get_info(0)
-            if free_vram >= 7 * (1024 ** 3):
-                device = 'cuda:0'
-                dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-            elif memory_gib >= 12:
-                device = 'cpu'
-                dtype = torch.float32
-            else:
-                raise QwenResourceError(
-                    'Qwen 1.7B necesita unos 7 GB de VRAM libre o 12 GB de RAM disponible. '
-                    'Libera memoria o selecciona Kokoro en Voz.'
-                )
-        elif getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available():
-            if memory_gib < 12:
-                raise QwenResourceError(
-                    'Qwen 1.7B necesita unos 12 GB de memoria disponible. '
-                    'Libera memoria o selecciona Kokoro en Voz.'
-                )
-            device = 'mps'
-            dtype = torch.float16
-        else:
-            if memory_gib < 12:
-                raise QwenResourceError(
-                    'Qwen 1.7B necesita unos 12 GB de RAM disponible en este equipo. '
-                    'Libera memoria o selecciona Kokoro en Voz.'
-                )
-            device = 'cpu'
-            dtype = torch.float32
 
         class DownloadProgress(tqdm):
             def update(self, n=1):
@@ -210,7 +233,6 @@ class QwenVoice:
 
         if cancelled and cancelled.is_set():
             raise InterruptedError('Descarga de Qwen3-TTS cancelada.')
-        LOGGER.info('qwen.resources.check.ready device=%s memory_available_gib=%.1f', device, memory_gib)
         LOGGER.info('qwen.model.download.begin revision=%s', QWEN_MODEL_REVISION)
         try:
             snapshot_download(

@@ -21,7 +21,8 @@ from PySide6.QtCore import Qt
 
 from .config import SecretStore, Settings, load_settings, save_settings
 from .diagnostics import LOGGER, configure_logging, record_exception
-from .local_voice import QwenDependencyError, preload_qwen_runtime
+from .local_voice import (QwenDependencyError, QwenResourceError, preload_local_runtime,
+                          preload_qwen_runtime)
 from .memory import MemoryStore
 from .microphone import MicWorker
 from .worker import SessionWorker
@@ -352,22 +353,26 @@ class MainWindow(QMainWindow):
         if mode == 'models' and settings.reply_provider == 'gemini' and not keys['gemini']:
             self._log('Introduce una clave de Gemini en API y privacidad.')
             return
-        if settings.tts_engine == 'qwen' and mode in {'demo', 'live', 'preview_local'}:
-            self.status.setText('● Preparando Qwen3-TTS en el hilo principal…')
+        if settings.tts_engine in {'qwen', 'local'} and mode in {'demo', 'live', 'preview_local'}:
+            label = 'Qwen3-TTS' if settings.tts_engine == 'qwen' else 'Kokoro'
+            self.status.setText(f'● Preparando {label} en el hilo principal…')
             self.tabs.setEnabled(False)
             self.start_button.setEnabled(False)
             self.demo_button.setEnabled(False)
             QApplication.processEvents()
             try:
-                preload_qwen_runtime()
-            except QwenDependencyError as exc:
+                if settings.tts_engine == 'qwen':
+                    preload_qwen_runtime()
+                else:
+                    preload_local_runtime()
+            except (QwenDependencyError, QwenResourceError) as exc:
                 self._log(str(exc))
-                self.status.setText('● No se pudo preparar Qwen3-TTS.')
+                self.status.setText(f'● No se pudo preparar {label}.')
                 return
             except Exception as exc:  # noqa: BLE001 - keep a failed preload from closing the UI
-                record_exception('Qwen runtime preload failed', exc)
-                self._log('No se pudo preparar Qwen3-TTS. Consulta los registros técnicos o selecciona Kokoro.')
-                self.status.setText('● Qwen no disponible · selecciona Kokoro o consulta los registros.')
+                record_exception(f'{label} runtime preload failed', exc)
+                self._log(f'No se pudo preparar {label}. Consulta los registros técnicos o elige otra voz.')
+                self.status.setText(f'● {label} no disponible · consulta los registros.')
                 return
             finally:
                 self.tabs.setEnabled(True)
