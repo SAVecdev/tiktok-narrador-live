@@ -275,7 +275,8 @@ class SessionWorker(QThread):
             try:
                 if event.kind != "join" and time.monotonic() - event.created > self.MAX_AGE:
                     continue
-                text = self._policy.greeting(event) if event.kind == "join" else event.text
+                text = (await self._personalized_greeting(event, services)
+                        if event.kind == "join" else event.text)
                 if self.mode == "demo":
                     try:
                         played = await self._play(text, await self._synthesize_local(text))
@@ -365,6 +366,24 @@ class SessionWorker(QThread):
             return await self._synthesize_local(text)
         return await services.synthesize(text)
 
+    async def _personalized_greeting(self, event, services):
+        self._emit(self.status, 'Redactando una bienvenida personalizada con IA…')
+        try:
+            if services is None:
+                # Demo uses local Ollama only and never sends viewer data to Google.
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    local = GoogleServices(client, {}, self.settings)
+                    return await asyncio.wait_for(local.greet(event.name, local_only=True), 12.0)
+            return await asyncio.wait_for(services.greet(event.name), 12.0)
+        except (ProviderError, TimeoutError) as exc:
+            record_exception('AI join greeting unavailable', exc)
+            self._emit(self.log, 'La IA no respondió a tiempo; se usará un saludo breve de respaldo.')
+            name = clean_text(event.name, 60) or 'visitante'
+            activity = clean_text(self.settings.activity_context, 80)
+            if activity:
+                return f'¡Qué gusto verte, {name}! Estamos con {activity}.'
+            return f'¡Qué alegría tenerte por aquí, {name}! Ponte cómodo.'
+
     @staticmethod
     def _voice_error_message(error):
         if isinstance(error, (QwenDependencyError, QwenResourceError)):
@@ -397,6 +416,8 @@ class SessionWorker(QThread):
         # Qwen/Kokoro load native runtimes and can spend tens of seconds in
         # inference. Keep that work off asyncio's loop so TikTokLive can keep
         # acknowledging websocket frames while audio is generated.
+        if self.settings.tts_engine == 'qwen':
+            self._emit(self.status, 'Generando audio con Qwen3-TTS 1.7B…')
         future = self._voice_executor.submit(self._synthesize_local_sync, text)
         while not future.done():
             await asyncio.sleep(0.05)
