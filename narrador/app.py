@@ -217,7 +217,7 @@ class MainWindow(QMainWindow):
         form.addRow('Comentarios', self.mode)
         form.addRow('', self.greetings)
         form.addRow('Saludo inicial · voz IA', self.initial_greeting)
-        form.addRow('Saludo · usa {usuario}', self.greeting)
+        form.addRow('Estilo del saludo con IA', self.greeting)
         form.addRow('Palabras bloqueadas', self.blocked)
         form.addRow('Personalidad de la IA', self.persona)
         form.addRow('¿Qué estás haciendo en el directo?', self.activity_context)
